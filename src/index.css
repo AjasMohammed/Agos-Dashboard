@@ -1,0 +1,129 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* AgentOS brand design tokens (HSL channels consumed by tailwind.config.ts). */
+@layer base {
+  :root {
+    --background: 220 25% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --primary: 243 75% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 40%;
+    --accent: 220 14% 93%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 71% 40%;
+    --warning: 35 92% 44%;
+    --border: 220 13% 89%;
+    --input: 220 13% 87%;
+    --ring: 243 75% 59%;
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --background: 224 50% 5%;
+    --foreground: 213 31% 95%;
+    --card: 223 42% 8%;
+    --card-foreground: 213 31% 95%;
+    --primary: 243 85% 70%;
+    --primary-foreground: 224 50% 8%;
+    --secondary: 220 32% 14%;
+    --secondary-foreground: 213 31% 95%;
+    --muted: 221 35% 12%;
+    --muted-foreground: 217 18% 65%;
+    --accent: 220 32% 16%;
+    --accent-foreground: 213 31% 95%;
+    --destructive: 0 70% 58%;
+    --destructive-foreground: 213 31% 95%;
+    --success: 142 70% 50%;
+    --warning: 38 92% 56%;
+    --border: 221 32% 16%;
+    --input: 221 32% 18%;
+    --ring: 243 85% 70%;
+    --radius: 0.625rem;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    margin: 0;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family:
+      "Fira Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: hsl(var(--primary) / 0.25);
+  }
+
+  /* Slim, theme-aware scrollbars for the panel's many scroll regions. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background-color: hsl(var(--border));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.4);
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  /* Frosted surface used by the topbar / floating chrome. */
+  .glass {
+    background-color: hsl(var(--background) / 0.75);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /* Faint blueprint grid behind hero surfaces (login, dashboard headline). */
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.55) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.55) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .text-gradient {
+    background-image: linear-gradient(
+      135deg,
+      hsl(var(--foreground)),
+      hsl(var(--primary)) 80%
+    );
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

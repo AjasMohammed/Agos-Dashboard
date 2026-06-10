@@ -1,0 +1,22 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env.local
+.env.*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+
+# Test / build artifacts
+coverage
+playwright-report
+test-results
+.playwright-mcp/
+
+# Python caches (skills)
+__pycache__/
+*.pyc
