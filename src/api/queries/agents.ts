@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client, unwrap } from "../client";
+import { useDisconnectedPolling } from "@/realtime/cacheBridge";
 import type {
   AgentDetail,
   AgentIdentity,
@@ -17,6 +18,9 @@ export function useAgents() {
   return useQuery({
     queryKey: agentKeys.all,
     queryFn: async () => unwrap<AgentSummary[]>(await client.GET("/api/v1/agents")),
+    // Poll only while the WS is down (see useTasks) — keeps the list fresh
+    // without redundant polling when realtime is healthy.
+    refetchInterval: useDisconnectedPolling(),
   });
 }
 

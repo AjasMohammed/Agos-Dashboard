@@ -146,3 +146,87 @@ test("scope gating hides nav items the key cannot access", async ({ page }) => {
   await expect(page.getByRole("link", { name: "Agents" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Secrets" })).toHaveCount(0);
 });
+
+const FILES = {
+  data: [
+    {
+      id: "f1f2f3f4-0000-0000-0000-000000000001",
+      name: "report.pdf",
+      original_name: "Q2 Report.pdf",
+      mime: "application/pdf",
+      size: 2048,
+      scope: "global",
+      tags: [],
+      uploaded_at: "2026-06-01T00:00:00Z",
+    },
+    {
+      id: "f1f2f3f4-0000-0000-0000-000000000002",
+      name: "notes.md",
+      original_name: "notes.md",
+      mime: "text/markdown",
+      size: 512,
+      scope: "global",
+      tags: [],
+      uploaded_at: "2026-06-02T00:00:00Z",
+    },
+  ],
+  meta: { total: 2 },
+};
+
+async function stubFiles(page: Page) {
+  await page.route("**/api/v1/files", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(FILES) }),
+  );
+}
+
+test("files page shows the file ID and a copy-mention action", async ({ page }) => {
+  await login(page);
+  await stubFiles(page);
+  await page.goto("/files");
+  await expect(page.getByRole("heading", { name: "Files" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "File ID" })).toBeVisible();
+  // Truncated id rendered as a click-to-copy button carrying the full id in its title.
+  await expect(page.getByTitle(/f1f2f3f4-0000-0000-0000-000000000001 — click to copy/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /mention/i })).toHaveCount(2);
+});
+
+test("typing @ in the run-task prompt suggests uploaded files", async ({ page }) => {
+  await login(page);
+  await stubFiles(page);
+  await page.route("**/api/v1/tasks*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { total: 0 } }),
+    }),
+  );
+  await page.route("**/api/v1/agents*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { total: 0 } }),
+    }),
+  );
+  await page.goto("/tasks");
+  await page.getByRole("button", { name: /new task/i }).click();
+
+  const prompt = page.getByPlaceholder(/Summarize the latest audit events/);
+  await prompt.fill("Summarize @rep");
+  // Suggestion list opens, filtered to the matching file.
+  await expect(page.getByRole("option", { name: /report\.pdf/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /notes\.md/ })).toHaveCount(0);
+  // Enter picks the highlighted file and inserts the sanitized @name.
+  await prompt.press("Enter");
+  await expect(prompt).toHaveValue("Summarize @report.pdf ");
+
+  // Escape with the menu open closes only the menu — the dialog (and the
+  // typed prompt) survive; a second Escape then closes the dialog.
+  await prompt.pressSequentially("@");
+  await expect(page.getByRole("listbox", { name: /uploaded files/i })).toBeVisible();
+  await prompt.press("Escape");
+  await expect(page.getByRole("listbox", { name: /uploaded files/i })).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(prompt).toHaveValue("Summarize @report.pdf @");
+  await prompt.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});

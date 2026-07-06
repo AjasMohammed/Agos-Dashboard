@@ -7,6 +7,7 @@ import {
   Outlet,
 } from "@tanstack/react-router";
 import { AppShell } from "./shell";
+import { AppErrorBoundary } from "./app-error-boundary";
 import { NAV_ITEMS } from "./nav";
 import { LoginPage } from "@/auth/login";
 import { Placeholder } from "@/routes/placeholder";
@@ -103,6 +104,9 @@ const appRoute = createRoute({
     }
   },
   component: AppShell,
+  // Catch render throws from any app page (e.g. backend shape drift) instead of
+  // white-screening the shell.
+  errorComponent: AppErrorBoundary,
 });
 
 /** Redirect to the dashboard if the key lacks the read scope a section requires. */

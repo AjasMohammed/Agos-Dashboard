@@ -38,17 +38,82 @@ import { relativeTime } from "@/lib/format";
 import type { Escalation, Role, PrefProposal } from "@/api/models";
 
 // ── Escalations ─────────────────────────────────────────────────────────────
+
+/** Group order for the review queue — most urgent first, unknown urgencies last. */
+const URGENCY_ORDER = ["critical", "high", "normal", "low"];
+const urgencyRank = (u: string) => {
+  const i = URGENCY_ORDER.indexOf(u.toLowerCase());
+  return i === -1 ? URGENCY_ORDER.length : i;
+};
+
+const escOptions = (e: Escalation) => e.options ?? ["approve", "deny"];
+
 export function EscalationsPage() {
   const query = useEscalations();
   const resolve = useResolveEscalation();
+  // Per-row in-flight set so one decision only disables its own row's buttons
+  // (a shared `isPending` froze the whole list); a Set because bulk-resolve
+  // fires several mutations concurrently.
+  const [acting, setActing] = useState<ReadonlySet<string>>(new Set());
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+
+  function setRowActing(ids: string[], on: boolean) {
+    setActing((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }
+
   async function decide(e: Escalation, decision: string) {
+    const id = String(e.id);
+    setRowActing([id], true);
     try {
-      await resolve.mutateAsync({ id: String(e.id), decision });
+      await resolve.mutateAsync({ id, decision });
       toast.success(`Resolved: ${decision}`);
     } catch (err) {
       toastError(err);
+    } finally {
+      setRowActing([id], false);
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   }
+
+  /** Resolve every selected escalation that supports `decision`, concurrently. */
+  async function bulkDecide(items: Escalation[], decision: string) {
+    const targets = items.filter(
+      (e) => selected.has(String(e.id)) && escOptions(e).includes(decision),
+    );
+    if (targets.length === 0) return;
+    const ids = targets.map((e) => String(e.id));
+    setRowActing(ids, true);
+    const results = await Promise.allSettled(
+      targets.map((e) => resolve.mutateAsync({ id: String(e.id), decision })),
+    );
+    setRowActing(ids, false);
+    setSelected(new Set());
+    const failed = results.filter((r) => r.status === "rejected").length;
+    const past = decision === "deny" ? "denied" : `${decision}d`;
+    if (failed === 0) toast.success(`${results.length} ${past}`);
+    else toast.warning(`${results.length - failed} ${past}, ${failed} failed`);
+  }
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   return (
     <div>
       <PageHeader title="Escalations" description="Human-approval requests from agents." />
@@ -57,37 +122,98 @@ export function EscalationsPage() {
         isEmpty={(d) => d.length === 0}
         empty={<EmptyState icon={ShieldAlert} title="No pending escalations" />}
       >
-        {(items) => (
-          <div className="space-y-3">
-            {items.map((e) => (
-              <Card key={e.id}>
-                <CardContent className="flex flex-wrap items-start justify-between gap-3 p-4">
-                  <div className="min-w-0">
-                    <p className="font-medium">{e.decision_point}</p>
-                    <p className="text-sm text-muted-foreground">{e.context_summary}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {e.blocking ? "blocking · " : ""}
-                      created {relativeTime(e.created_at)} · expires {relativeTime(e.expires_at)}
-                    </p>
+        {(items) => {
+          // Group by urgency, most urgent first, for a scannable review queue.
+          const groups = [...new Set(items.map((e) => e.urgency))].sort(
+            (a, b) => urgencyRank(a) - urgencyRank(b),
+          );
+          return (
+            <div className="space-y-5">
+              {selected.size > 0 && (
+                <div className="sticky top-0 z-10 flex items-center gap-2 rounded-md border border-border bg-background/95 p-2 shadow-sm backdrop-blur">
+                  <span className="text-sm text-muted-foreground">{selected.size} selected</span>
+                  {/* Disabled while any resolve is in flight — a second click would
+                      re-fire the same (or a conflicting) decision for the same ids. */}
+                  <Button
+                    size="sm"
+                    disabled={acting.size > 0}
+                    onClick={() => void bulkDecide(items, "approve")}
+                  >
+                    Approve selected
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={acting.size > 0}
+                    onClick={() => void bulkDecide(items, "deny")}
+                  >
+                    Deny selected
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                    Clear
+                  </Button>
+                </div>
+              )}
+              {groups.map((urgency) => (
+                <div key={urgency} className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant="secondary"
+                      className={
+                        urgencyRank(urgency) === 0 ? "bg-destructive/15 text-destructive" : undefined
+                      }
+                    >
+                      {urgency}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {items.filter((e) => e.urgency === urgency).length} pending
+                    </span>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {(e.options ?? ["approve", "deny"]).map((opt) => (
-                      <Button
-                        key={opt}
-                        size="sm"
-                        variant={opt === "deny" ? "destructive" : "default"}
-                        disabled={resolve.isPending}
-                        onClick={() => decide(e, opt)}
-                      >
-                        {opt}
-                      </Button>
+                  {items
+                    .filter((e) => e.urgency === urgency)
+                    .map((e) => (
+                      <Card key={e.id}>
+                        <CardContent className="flex flex-wrap items-start justify-between gap-3 p-4">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <input
+                              type="checkbox"
+                              className="mt-1 size-4 accent-primary"
+                              aria-label={`Select ${e.decision_point}`}
+                              checked={selected.has(String(e.id))}
+                              onChange={() => toggleSelected(String(e.id))}
+                            />
+                            <div className="min-w-0">
+                              <p className="font-medium">{e.decision_point}</p>
+                              <p className="text-sm text-muted-foreground">{e.context_summary}</p>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {e.agent_id ? `${e.agent_id} · ` : ""}
+                                {e.blocking ? "blocking · " : ""}
+                                created {relativeTime(e.created_at)} · expires{" "}
+                                {relativeTime(e.expires_at)}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {escOptions(e).map((opt) => (
+                              <Button
+                                key={opt}
+                                size="sm"
+                                variant={opt === "deny" ? "destructive" : "default"}
+                                disabled={acting.has(String(e.id))}
+                                onClick={() => decide(e, opt)}
+                              >
+                                {opt}
+                              </Button>
+                            ))}
+                          </div>
+                        </CardContent>
+                      </Card>
                     ))}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
+                </div>
+              ))}
+            </div>
+          );
+        }}
       </QueryState>
     </div>
   );

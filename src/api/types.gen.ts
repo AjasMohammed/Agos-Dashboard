@@ -821,6 +821,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/events/subscriptions/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/events/subscriptions/{id}/disable` — Pause a subscription. */
+        post: operations["events_disable_subscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/subscriptions/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/events/subscriptions/{id}/enable` — Activate a subscription. */
+        post: operations["events_enable_subscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/files": {
         parameters: {
             query?: never;
@@ -1926,6 +1960,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ws/ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/ws/ticket` — Mint a short-lived, single-use WebSocket auth
+         *     ticket carrying the presented key's scopes. Browsers can't send an
+         *     `Authorization` header on a WS upgrade; the ticket keeps the long-lived key
+         *     out of the URL query string (which lands in proxy logs and history).
+         * @description Not audit-logged: a ticket is a seconds-lived derivative of the presented
+         *     key with identical scopes, minted on every reconnect — logging each mint
+         *     would flood the audit trail with what is effectively "key was used".
+         */
+        post: operations["auth_ws_ticket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2440,6 +2499,11 @@ export interface components {
             id: string;
             prompt: string;
             status: string;
+            /**
+             * @description Event type that triggered this task, if it was created by an event
+             *     subscription (e.g. `DiskSpaceLow`). Absent for user/scheduled tasks.
+             */
+            trigger_event_type?: string | null;
         };
         ApiTaskSummary: {
             agent_name?: string | null;
@@ -3205,6 +3269,11 @@ export interface components {
                 id: string;
                 prompt: string;
                 status: string;
+                /**
+                 * @description Event type that triggered this task, if it was created by an event
+                 *     subscription (e.g. `DiskSpaceLow`). Absent for user/scheduled tasks.
+                 */
+                trigger_event_type?: string | null;
             };
         };
         /**
@@ -4060,6 +4129,27 @@ export interface components {
                 id: string;
             };
         };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_WsTicketResponse: {
+            /**
+             * @description A short-lived, single-use WebSocket auth ticket (`POST /api/v1/ws/ticket`).
+             *     Connect with `GET /api/v1/ws?ticket=…` before it expires.
+             */
+            data: {
+                /**
+                 * Format: int64
+                 * @description Seconds until the ticket expires.
+                 */
+                expires_in: number;
+                /** @description Opaque single-use ticket; carries the minting key's scopes. */
+                ticket: string;
+            };
+        };
         /** @description Query filter for `GET /api/v1/escalations`. */
         EscalationListQuery: {
             /**
@@ -4521,6 +4611,19 @@ export interface components {
         /** @description Response for workflow create/update — echoes the resolved id. */
         WorkflowSaveResponse: {
             id: string;
+        };
+        /**
+         * @description A short-lived, single-use WebSocket auth ticket (`POST /api/v1/ws/ticket`).
+         *     Connect with `GET /api/v1/ws?ticket=…` before it expires.
+         */
+        WsTicketResponse: {
+            /**
+             * Format: int64
+             * @description Seconds until the ticket expires.
+             */
+            expires_in: number;
+            /** @description Opaque single-use ticket; carries the minting key's scopes. */
+            ticket: string;
         };
     };
     responses: never;
@@ -6679,6 +6782,88 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Subscription removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Subscription not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    events_disable_subscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subscription disabled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Subscription not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    events_enable_subscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subscription enabled */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9841,6 +10026,35 @@ export interface operations {
             };
             /** @description Workflow not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    auth_ws_ticket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Single-use WS ticket (seconds-lived) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_WsTicketResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

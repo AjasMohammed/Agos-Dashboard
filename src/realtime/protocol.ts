@@ -1,11 +1,14 @@
 /**
- * WebSocket wire protocol — hand-mirrored from the Rust `ClientFrame` /
- * `ServerFrame` enums in `crates/agentos-api/src/ws/protocol.rs`. Both are
+ * WebSocket wire protocol — mirrors the Rust `ClientFrame` / `ServerFrame`
+ * enums in `crates/agentos-api/src/ws/protocol.rs`. Both are
  * `#[serde(tag = "type")]`, so every frame is `{ type, ...fields }`.
  *
- * (There is no codegen for these — the backend has no `gen-events` bin — so this
- * file is the source of truth on the client. Keep it in sync with the Rust enum.)
+ * The field shapes are hand-written, but the TAG SETS are pinned to the
+ * generated `events.gen.ts` (produced from the Rust enums by the agos
+ * `gen-events` bin): the assertions at the bottom of this file fail `tsc`
+ * if either union drifts from the generated tags.
  */
+import type { ClientFrameTag, ServerFrameTag } from "./events.gen";
 
 // ── Client → Server ─────────────────────────────────────────────────────────
 
@@ -59,3 +62,22 @@ export function parseServerFrame(raw: string): ServerFrame | null {
     return null;
   }
 }
+
+// ── Generated-tag parity guards ─────────────────────────────────────────────
+// `tsc` fails here when the hand-written unions above drift from the generated
+// tag lists (a frame added/renamed in Rust, or one added here that the backend
+// doesn't know). Exported so lint sees them as used.
+type MutuallyExhaustive<A extends string, B extends string> = [
+  Exclude<A, B>,
+  Exclude<B, A>,
+] extends [never, never]
+  ? true
+  : never;
+export const CLIENT_FRAMES_MATCH_GENERATED: MutuallyExhaustive<
+  ClientFrame["type"],
+  ClientFrameTag
+> = true;
+export const SERVER_FRAMES_MATCH_GENERATED: MutuallyExhaustive<
+  ServerFrame["type"],
+  ServerFrameTag
+> = true;

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { CalendarClock, Workflow, Plus } from "lucide-react";
 import {
   useSchedules,
+  useScheduleRuns,
   useCreateSchedule,
   usePreviewCron,
   useToggleSchedule,
@@ -17,6 +18,7 @@ import {
 import { useAgents } from "@/api/queries/agents";
 import { PageHeader } from "@/components/page-header";
 import { QueryState } from "@/components/query-state";
+import { StatusBadge } from "@/components/status-badge";
 import { DataTable, type Column } from "@/components/data-table";
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -116,11 +118,63 @@ function CreateScheduleDialog() {
   );
 }
 
+/** Per-schedule run history — "did my schedule actually fire, and did it fail". */
+function RunHistoryDialog({
+  scheduleId,
+  onOpenChange,
+}: {
+  scheduleId: string | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const runs = useScheduleRuns(scheduleId);
+  return (
+    <Dialog open={scheduleId != null} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Run history</DialogTitle>
+          <DialogDescription>Most recent firings of this schedule.</DialogDescription>
+        </DialogHeader>
+        <QueryState
+          query={runs}
+          isEmpty={(d) => d.length === 0}
+          empty={<p className="py-6 text-center text-sm text-muted-foreground">No runs recorded yet.</p>}
+        >
+          {(items) => (
+            <div className="max-h-80 space-y-2 overflow-y-auto">
+              {items.map((r) => (
+                <div
+                  key={r.run_id}
+                  className="flex items-center justify-between gap-3 rounded-md border border-border p-2 text-sm"
+                >
+                  <span className="text-muted-foreground">{relativeTime(r.fired_at)}</span>
+                  <StatusBadge status={r.status} />
+                  {r.task_id ? (
+                    <Link
+                      to="/tasks/$id"
+                      params={{ id: String(r.task_id) }}
+                      className="truncate text-xs text-primary hover:underline"
+                    >
+                      task {String(r.task_id).slice(0, 8)}
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </QueryState>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function SchedulesPage() {
   const query = useSchedules();
   const pause = useToggleSchedule("pause");
   const resume = useToggleSchedule("resume");
   const del = useDeleteSchedule();
+  const [historyId, setHistoryId] = useState<string | null>(null);
   async function onDelete(id: string) {
     if (!(await confirm({ title: "Delete schedule?", destructive: true, confirmLabel: "Delete" }))) return;
     del.mutateAsync(id).then(() => toast.success("Deleted")).catch(toastError);
@@ -151,6 +205,9 @@ export function SchedulesPage() {
         <span className="flex gap-1">
           {s.kind === "cron" && (
             <>
+              <Button variant="ghost" size="sm" onClick={() => setHistoryId(String(s.id))}>
+                History
+              </Button>
               <Button variant="ghost" size="sm" onClick={() => pause.mutateAsync(String(s.id)).catch(toastError)}>
                 Pause
               </Button>
@@ -176,6 +233,7 @@ export function SchedulesPage() {
       <QueryState query={query} isEmpty={(d) => d.length === 0} empty={<EmptyState icon={CalendarClock} title="No schedules" />}>
         {(rows) => <DataTable columns={columns} rows={rows} getRowId={(s) => String(s.id)} />}
       </QueryState>
+      <RunHistoryDialog scheduleId={historyId} onOpenChange={(o) => !o && setHistoryId(null)} />
     </div>
   );
 }

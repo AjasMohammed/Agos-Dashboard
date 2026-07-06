@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { useRunTask } from "@/api/queries/tasks";
 import { useAgents } from "@/api/queries/agents";
@@ -15,13 +15,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
+import { MentionTextarea } from "@/components/mention-textarea";
 
 export function RunTaskDialog() {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [agentName, setAgentName] = useState("");
   const [autonomous, setAutonomous] = useState(false);
+  // While the @file menu is open, Escape must close it — not the dialog
+  // (Radix's capture-phase Escape listener would otherwise win and wipe the form).
+  const mentionMenuOpen = useRef(false);
   const run = useRunTask();
   const agents = useAgents();
 
@@ -56,7 +59,11 @@ export function RunTaskDialog() {
       <DialogTrigger asChild>
         <Button>New task</Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent
+        onEscapeKeyDown={(e) => {
+          if (mentionMenuOpen.current) e.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Run a task</DialogTitle>
           <DialogDescription>Dispatch a prompt to an agent.</DialogDescription>
@@ -64,13 +71,15 @@ export function RunTaskDialog() {
         <form onSubmit={onSubmit} className="grid gap-3">
           <div className="grid gap-1.5">
             <Label>Prompt</Label>
-            <Textarea
+            <MentionTextarea
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onValueChange={setPrompt}
+              onMenuOpenChange={(open) => (mentionMenuOpen.current = open)}
               required
               autoFocus
               className="min-h-[120px]"
-              placeholder="Summarize the latest audit events…"
+              menuPlacement="bottom"
+              placeholder="Summarize the latest audit events… (@ mentions an uploaded file)"
             />
           </div>
           <div className="grid gap-1.5">

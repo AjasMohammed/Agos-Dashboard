@@ -15,6 +15,49 @@ export type TaskDetail = S["ApiTaskDetail"];
 export type RunTaskRequest = S["RunTaskRequest"];
 export type CheckpointSummary = S["ApiCheckpointSummary"];
 
+// Task execution trace. The `/tasks/{id}/trace` endpoint returns an untyped
+// `Value` envelope in the contract, so these shapes are hand-mirrored from the
+// kernel's `TaskTrace` (agos: crates/agentos-types/src/task_trace.rs). This is
+// where a task's tool calls and their outputs live — the task DTO itself has no
+// output field.
+export interface PermissionCheckTrace {
+  granted: boolean;
+  deny_reason: string | null;
+}
+export interface ToolCallTrace {
+  tool_name: string;
+  input_json: unknown;
+  output_json: unknown | null;
+  error: string | null;
+  duration_ms: number;
+  permission_check: PermissionCheckTrace;
+  injection_score: number | null;
+  snapshot_ref: string | null;
+}
+export interface IterationTrace {
+  iteration: number;
+  started_at: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  stop_reason: string;
+  tool_calls: ToolCallTrace[];
+  snapshot_id: string | null;
+}
+export interface TaskTrace {
+  task_id: string;
+  agent_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  prompt_preview: string;
+  iterations: IterationTrace[];
+  snapshot_ids: string[];
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd: number;
+}
+
 // Tools
 export type ToolSummary = S["ApiToolSummary"];
 
@@ -48,6 +91,7 @@ export type ConnectorSummary = S["ApiConnectorSummary"];
 export type WebhookEndpoint = S["ApiWebhookEndpoint"];
 export type EventSubscription = S["ApiEventSubscription"];
 export type CreateSubscriptionRequest = S["CreateSubscriptionRequest"];
+export type EmitEventRequest = S["EmitEventRequest"];
 
 // System
 export type FileMeta = S["ApiFileMeta"];

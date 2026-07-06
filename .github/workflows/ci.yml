@@ -16,6 +16,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run generate
+      - run: npm run generate:events
+      # Generated files must match what's committed — catches a stale
+      # types.gen.ts / events.gen.ts after a contract sync.
+      - run: git diff --exit-code src/api/types.gen.ts src/realtime/events.gen.ts
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test

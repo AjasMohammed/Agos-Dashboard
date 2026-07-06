@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { FolderOpen, NotebookPen, Lock, DollarSign, FileText } from "lucide-react";
+import { FolderOpen, NotebookPen, Lock, DollarSign, FileText, Copy, AtSign } from "lucide-react";
 import {
   useFiles,
   useDeleteFile,
@@ -19,7 +19,7 @@ import {
   useLogs,
   useResources,
 } from "@/api/queries/system";
-import { useAuthStore } from "@/auth/store";
+import { authedFetch } from "@/api/client";
 import { PageHeader } from "@/components/page-header";
 import { QueryState } from "@/components/query-state";
 import { DataTable, type Column } from "@/components/data-table";
@@ -48,10 +48,7 @@ import type { FileMeta, CostSummaryEntry } from "@/api/models";
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 async function downloadFile(id: string, name: string) {
-  const key = useAuthStore.getState().apiKey;
-  const res = await fetch(`${API_BASE}/api/v1/files/${id}/download`, {
-    headers: key ? { Authorization: `Bearer ${key}` } : {},
-  });
+  const res = await authedFetch(`${API_BASE}/api/v1/files/${id}/download`);
   if (!res.ok) {
     toast.error("Download failed");
     return;
@@ -63,6 +60,18 @@ async function downloadFile(id: string, name: string) {
   a.download = name;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function copyText(text: string, label: string) {
+  // navigator.clipboard is absent in insecure (plain-http, non-localhost) contexts.
+  if (!navigator.clipboard) {
+    toast.error("Copy failed (clipboard unavailable)");
+    return;
+  }
+  navigator.clipboard.writeText(text).then(
+    () => toast.success(`${label} copied`),
+    () => toast.error("Copy failed"),
+  );
 }
 
 function UploadButton() {
@@ -96,6 +105,21 @@ export function FilesPage() {
   }
   const columns: Column<FileMeta>[] = [
     { key: "name", header: "Name", cell: (f) => <span className="font-medium">{f.original_name || f.name}</span> },
+    {
+      key: "id",
+      header: "File ID",
+      cell: (f) => (
+        <button
+          type="button"
+          onClick={() => copyText(f.id, "File ID")}
+          title={`${f.id} — click to copy`}
+          className="group flex items-center gap-1 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {f.id.slice(0, 8)}…
+          <Copy className="size-3 opacity-0 transition-opacity group-hover:opacity-100" />
+        </button>
+      ),
+    },
     { key: "mime", header: "Type", cell: (f) => <span className="text-xs text-muted-foreground">{f.mime}</span> },
     { key: "size", header: "Size", cell: (f) => <span className="text-muted-foreground">{bytes(f.size)}</span> },
     { key: "scope", header: "Scope", cell: (f) => <Badge variant="muted">{f.scope}</Badge> },
@@ -105,6 +129,14 @@ export function FilesPage() {
       header: "",
       cell: (f) => (
         <span className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            title={`Copy @${f.name} to reference this file in a chat or task prompt`}
+            onClick={() => copyText(`@${f.name}`, "Mention")}
+          >
+            <AtSign className="size-3.5" /> Mention
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => downloadFile(f.id, f.original_name || f.name)}>
             Download
           </Button>
@@ -119,7 +151,7 @@ export function FilesPage() {
     <div>
       <PageHeader
         title="Files"
-        description="Uploaded and agent-generated files."
+        description="Uploaded and agent-generated files. Reference one in a chat or task prompt by typing @ (or pasting its file ID)."
         actions={<UploadButton />}
       />
       <QueryState query={query} isEmpty={(d) => d.items.length === 0} empty={<EmptyState icon={FolderOpen} title="No files" />}>
@@ -132,9 +164,12 @@ export function FilesPage() {
 function ScratchEditDialog({
   page,
   onOpenChange,
+  onNavigate,
 }: {
   page: string | null;
   onOpenChange: (open: boolean) => void;
+  /** Jump to another page (backlink click) without closing the dialog. */
+  onNavigate: (page: string) => void;
 }) {
   const open = page != null;
   const detail = useScratchPage(page ?? "", open);
@@ -159,11 +194,29 @@ function ScratchEditDialog({
         {detail.isPending || !loaded ? (
           <Skeleton className="h-64 w-full" />
         ) : (
-          <Textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            className="min-h-[320px] font-mono text-xs"
-          />
+          <>
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="min-h-[320px] font-mono text-xs"
+            />
+            {(detail.data?.backlinks?.length ?? 0) > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">Linked from:</span>
+                {detail.data!.backlinks.map((b) => (
+                  <Button
+                    key={b.id}
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => onNavigate(b.title)}
+                  >
+                    {b.title}
+                  </Button>
+                ))}
+              </div>
+            )}
+          </>
         )}
         <DialogFooter>
           <Button
@@ -213,7 +266,11 @@ export function ScratchpadPage() {
           </div>
         )}
       </QueryState>
-      <ScratchEditDialog page={editPage} onOpenChange={(o) => !o && setEditPage(null)} />
+      <ScratchEditDialog
+        page={editPage}
+        onOpenChange={(o) => !o && setEditPage(null)}
+        onNavigate={setEditPage}
+      />
     </div>
   );
 }

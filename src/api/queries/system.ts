@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { client, unwrap, unwrapList } from "../client";
-import { useAuthStore } from "@/auth/store";
+import { client, unwrap, unwrapList, authedFetch } from "../client";
 import type {
   FileMeta,
   PageSummary,
@@ -16,10 +15,11 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 // ── Files ───────────────────────────────────────────────────────────────────
 export const fileKeys = { all: ["files"] as const };
-export function useFiles() {
+export function useFiles(enabled = true) {
   return useQuery({
     queryKey: fileKeys.all,
     queryFn: async () => unwrapList<FileMeta>(await client.GET("/api/v1/files")),
+    enabled,
   });
 }
 export function useDeleteFile() {
@@ -35,16 +35,12 @@ export function useDeleteFile() {
 export function useUploadFile() {
   const qc = useQueryClient();
   return useMutation({
-    // Multipart upload via raw fetch (openapi-fetch + FormData is awkward).
+    // Multipart upload via authedFetch (openapi-fetch + FormData is awkward).
+    // No content-type header — the browser sets the multipart boundary.
     mutationFn: async (file: File) => {
-      const key = useAuthStore.getState().apiKey;
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${API_BASE}/api/v1/files`, {
-        method: "POST",
-        headers: key ? { Authorization: `Bearer ${key}` } : {},
-        body: fd,
-      });
+      const res = await authedFetch(`${API_BASE}/api/v1/files`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(`Upload failed (${res.status})`);
       return res.json();
     },

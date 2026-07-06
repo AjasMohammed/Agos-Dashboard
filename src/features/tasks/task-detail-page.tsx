@@ -18,8 +18,10 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { confirm } from "@/lib/confirm";
+import { humanizeEvent } from "@/features/integrate/event-catalog";
 import { toastError } from "@/lib/errors";
 import { relativeTime } from "@/lib/format";
+import { TaskTraceView } from "./task-trace";
 
 const RUNNING = ["running", "pending", "queued", "in_progress"];
 const RESUMABLE = ["suspended", "paused", "checkpointed"];
@@ -97,6 +99,11 @@ export function TaskDetailPage() {
                 <StatusBadge status={t.status} />
                 <span>created {relativeTime(t.created_at)}</span>
                 {t.completed_at && <span>completed {relativeTime(t.completed_at)}</span>}
+                {t.trigger_event_type && (
+                  <span title="This task was created by an event subscription">
+                    triggered by <span className="font-medium text-foreground">{humanizeEvent(t.trigger_event_type)}</span>
+                  </span>
+                )}
               </div>
 
               <Tabs value={tab} onValueChange={setTab}>
@@ -116,12 +123,30 @@ export function TaskDetailPage() {
                   </Card>
                 </TabsContent>
                 <TabsContent value="trace">
-                  <QueryState query={trace}>
-                    {(data) => (
-                      <pre className="overflow-auto rounded-lg border border-border bg-muted p-4 text-xs">
-                        {JSON.stringify(data, null, 2)}
-                      </pre>
-                    )}
+                  <QueryState
+                    query={trace}
+                    isEmpty={(d) => !d || d.iterations.length === 0}
+                    empty={
+                      <p className="py-8 text-center text-sm text-muted-foreground">
+                        No execution trace yet — tool calls and outputs appear here as the task runs.
+                      </p>
+                    }
+                  >
+                    {(data) =>
+                      data && (
+                        <div className="space-y-4">
+                          <TaskTraceView trace={data} />
+                          <details className="group">
+                            <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+                              Raw trace JSON
+                            </summary>
+                            <pre className="mt-2 overflow-auto rounded-lg border border-border bg-muted p-4 text-xs">
+                              {JSON.stringify(data, null, 2)}
+                            </pre>
+                          </details>
+                        </div>
+                      )
+                    }
                   </QueryState>
                 </TabsContent>
                 <TabsContent value="checkpoints">

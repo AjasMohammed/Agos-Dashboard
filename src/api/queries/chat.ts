@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { client, unwrap, unwrapList } from "../client";
-import { useAuthStore } from "@/auth/store";
+import { client, unwrap, unwrapList, authedFetch } from "../client";
 import type { ChatSessionSummary, ChatMessage } from "../models";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -14,6 +13,12 @@ export interface StreamHandlers {
   onChunk: (text: string) => void;
   onToolStart?: (name: string) => void;
   onTool?: (name: string, success: boolean) => void;
+  /**
+   * Fired on every byte read from the stream — including events with no
+   * dedicated handler (thinking, keepalives). Liveness signal for watchdogs:
+   * "connection alive" is not the same as "visible progress".
+   */
+  onActivity?: () => void;
   onDone: () => void;
   onError: (message: string) => void;
 }
@@ -31,21 +36,25 @@ export async function streamChatMessage(
   h: StreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const key = useAuthStore.getState().apiKey;
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}/api/v1/chat/sessions/${sessionId}/messages/stream`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        Accept: "text/event-stream",
-        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+    // `null` timeout: a streaming body is read for the life of the stream, so a
+    // request deadline would kill it. Mid-stream stalls are the composer's job.
+    res = await authedFetch(
+      `${API_BASE}/api/v1/chat/sessions/${sessionId}/messages/stream`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({ text }),
+        signal,
       },
-      body: JSON.stringify({ text }),
-      signal,
-    });
+      null,
+    );
   } catch (e) {
-    h.onError(e instanceof Error ? e.message : "network error");
+    // An intentional abort (unmount / session switch) is not an error.
+    if ((e as { name?: string })?.name !== "AbortError") {
+      h.onError(e instanceof Error ? e.message : "network error");
+    }
     return;
   }
   if (!res.ok || !res.body) {
@@ -59,6 +68,7 @@ export async function streamChatMessage(
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      h.onActivity?.();
       buffer += decoder.decode(value, { stream: true });
       let sep: number;
       while ((sep = buffer.indexOf("\n\n")) >= 0) {
@@ -109,10 +119,8 @@ export async function streamChatMessage(
 
 /** Download a session export (json|markdown) as a file. */
 export async function exportChatSession(sessionId: string, format: "json" | "markdown") {
-  const key = useAuthStore.getState().apiKey;
-  const res = await fetch(
+  const res = await authedFetch(
     `${API_BASE}/api/v1/chat/sessions/${sessionId}/export?format=${format}`,
-    { headers: key ? { Authorization: `Bearer ${key}` } : {} },
   );
   if (!res.ok) throw new Error(`Export failed (${res.status})`);
   const blob = await res.blob();

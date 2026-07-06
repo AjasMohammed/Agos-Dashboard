@@ -1,10 +1,36 @@
 import { create } from "zustand";
 import { useAuthStore } from "@/auth/store";
+import { ApiError, client, unwrap } from "@/api/client";
 import type { ClientFrame, ConnectionStatus, ServerFrame } from "./protocol";
 import { parseServerFrame } from "./protocol";
 
 // Origin for the WS endpoint (no path); the `/api/v1/ws` route is appended below.
 const WS_BASE = import.meta.env.VITE_WS_BASE ?? "";
+
+/**
+ * Preferred WS auth: a single-use, seconds-lived ticket minted over authed
+ * REST, so the long-lived key never appears in the socket URL (URLs land in
+ * proxy/access logs and browser history). Tickets are consumed on redeem, so
+ * every (re)connect mints a fresh one.
+ */
+async function defaultFetchTicket(): Promise<string> {
+  return unwrap(await client.POST("/api/v1/ws/ticket")).ticket;
+}
+let fetchTicket = defaultFetchTicket;
+
+async function wsAuthQuery(key: string): Promise<string> {
+  try {
+    return `ticket=${encodeURIComponent(await fetchTicket())}`;
+  } catch (err) {
+    // Old kernel (no ticket endpoint) → token fallback for THIS attempt only.
+    // Deliberately not latched: connects are rare, and a latch would let one
+    // transient proxy 404 permanently downgrade auth until a reload.
+    if (err instanceof ApiError && (err.status === 404 || err.status === 405)) {
+      return `token=${encodeURIComponent(key)}`;
+    }
+    throw err; // transient/5xx → retry with backoff, no downgrade
+  }
+}
 
 // Native WebSocket readyState constants (avoid depending on a global in tests).
 const OPEN = 1;
@@ -111,6 +137,10 @@ function scheduleReconnect() {
   }, delay);
 }
 
+// Invalidates in-flight async opens (the ticket mint awaits) when the world
+// changes underneath them — reset, logout, or a newer open() call.
+let openGeneration = 0;
+
 function open() {
   // Guard against opening a second socket (e.g. a reconnect timer firing while
   // a connection already came up).
@@ -122,7 +152,25 @@ function open() {
   }
   intentional = false;
   setStatus(attempts === 0 ? "connecting" : "reconnecting");
-  const url = `${WS_BASE}/api/v1/ws?token=${encodeURIComponent(key)}`;
+  const gen = ++openGeneration;
+  void openWithAuth(gen, key);
+}
+
+async function openWithAuth(gen: number, key: string) {
+  let auth: string;
+  try {
+    auth = await wsAuthQuery(key);
+  } catch {
+    // Transient mint failure — retry the whole open (mint included) with backoff.
+    if (gen === openGeneration && !socket && !intentional) scheduleReconnect();
+    return;
+  }
+  // The world may have moved while we awaited the mint (logout, disconnect,
+  // a competing open) — bail out silently rather than opening a zombie socket.
+  if (gen !== openGeneration || socket || intentional || !useAuthStore.getState().apiKey) {
+    return;
+  }
+  const url = `${WS_BASE}/api/v1/ws?${auth}`;
   let ws: WebSocket;
   try {
     ws = socketFactory(url);
@@ -213,8 +261,13 @@ export const __test = {
   setSocketFactory(factory: (url: string) => WebSocket) {
     socketFactory = factory;
   },
+  setTicketFetcher(fn: () => Promise<string>) {
+    fetchTicket = fn;
+  },
   reset() {
     clearTimers();
+    openGeneration++; // orphan any in-flight async open
+    fetchTicket = defaultFetchTicket;
     if (socket) {
       socket.onclose = null;
       try {

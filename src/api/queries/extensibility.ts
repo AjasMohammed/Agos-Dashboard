@@ -8,6 +8,7 @@ import type {
   WebhookEndpoint,
   EventSubscription,
   CreateSubscriptionRequest,
+  EmitEventRequest,
 } from "../models";
 
 // ── Plugins ─────────────────────────────────────────────────────────────────
@@ -152,5 +153,23 @@ export function useDeleteSubscription() {
       );
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: eventKeys.all }),
+  });
+}
+export function useToggleSubscription(action: "enable" | "disable") {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const path = `/api/v1/events/subscriptions/{id}/${action}` as
+        | "/api/v1/events/subscriptions/{id}/enable"
+        | "/api/v1/events/subscriptions/{id}/disable";
+      unwrap(await client.POST(path, { params: { path: { id } } }));
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: eventKeys.all }),
+  });
+}
+export function useEmitEvent() {
+  return useMutation({
+    mutationFn: async (body: EmitEventRequest) =>
+      unwrap(await client.POST("/api/v1/events/emit", { body })),
   });
 }

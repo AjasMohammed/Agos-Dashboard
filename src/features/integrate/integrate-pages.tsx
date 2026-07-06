@@ -19,9 +19,22 @@ import {
   useEventSubscriptions,
   useCreateSubscription,
   useDeleteSubscription,
+  useToggleSubscription,
+  useEmitEvent,
 } from "@/api/queries/extensibility";
 import { useAgents, useAgent, useGrantAgentPermission } from "@/api/queries/agents";
-import { EVENT_CATALOG, requiredResourcesFor, humanizeEvent } from "./event-catalog";
+import {
+  EVENT_CATALOG,
+  requiredResourcesFor,
+  humanizeEvent,
+  fieldsForSelection,
+  isExactSelection,
+  prettifyFilter,
+  prettifyThrottle,
+  validateFilter,
+  payloadSkeleton,
+  NEVER_EMITTED,
+} from "./event-catalog";
 import { PageHeader } from "@/components/page-header";
 import { QueryState } from "@/components/query-state";
 import { DataTable, type Column } from "@/components/data-table";
@@ -29,6 +42,7 @@ import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -317,6 +331,13 @@ function SubscribeAgentDialog() {
     () => (agent ? requiredResourcesFor(selection).filter((r) => !held.has(r)) : []),
     [agent, selection, held],
   );
+  const suggestedFields = useMemo(() => fieldsForSelection(selection), [selection]);
+  const filterError = useMemo(() => validateFilter(payloadFilter), [payloadFilter]);
+
+  /** Append a payload field name into the filter input so the user can finish the predicate. */
+  function insertField(field: string) {
+    setPayloadFilter((prev) => (prev.trimEnd() ? `${prev.trimEnd()} ${field} ` : `${field} `));
+  }
 
   function resetForm() {
     setAgent("");
@@ -331,6 +352,10 @@ function SubscribeAgentDialog() {
     e.preventDefault();
     if (!agent) {
       toast.error("Select an agent");
+      return;
+    }
+    if (filterError) {
+      toast.error(filterError);
       return;
     }
     try {
@@ -397,6 +422,7 @@ function SubscribeAgentDialog() {
                   {c.events.map((ev) => (
                     <option key={ev} value={ev}>
                       {humanizeEvent(ev)}
+                      {NEVER_EMITTED.has(ev) ? " (not currently emitted)" : ""}
                     </option>
                   ))}
                 </optgroup>
@@ -426,23 +452,183 @@ function SubscribeAgentDialog() {
 
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Advanced options</summary>
-            <div className="mt-2 grid gap-2">
-              <Input
-                value={payloadFilter}
-                onChange={(e) => setPayloadFilter(e.target.value)}
-                placeholder="Payload filter (e.g. severity == critical)"
-              />
-              <Input
-                value={throttle}
-                onChange={(e) => setThrottle(e.target.value)}
-                placeholder="Throttle (e.g. once_per:30s or max:5/1m)"
-              />
+            <div className="mt-2 grid gap-3">
+              <div className="grid gap-1.5">
+                <span className="text-xs text-muted-foreground">
+                  Payload filter — only trigger when the event data matches
+                </span>
+                <Input
+                  value={payloadFilter}
+                  onChange={(e) => setPayloadFilter(e.target.value)}
+                  placeholder="e.g. tool_name == shell"
+                  aria-invalid={filterError ? true : undefined}
+                  className={filterError ? "border-destructive" : undefined}
+                />
+                {filterError && <span className="text-[11px] text-destructive">{filterError}</span>}
+                {suggestedFields.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="text-xs text-muted-foreground">Fields:</span>
+                    {suggestedFields.map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        onClick={() => insertField(f)}
+                        className="rounded border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] hover:bg-muted"
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  isExactSelection(selection) && (
+                    <span className="text-[11px] text-muted-foreground">
+                      This event carries no simple fields to filter on.
+                    </span>
+                  )
+                )}
+                {!isExactSelection(selection) && suggestedFields.length === 0 && (
+                  <span className="text-[11px] text-muted-foreground">
+                    Pick a specific event above to see the fields you can filter on.
+                  </span>
+                )}
+                <span className="text-[11px] text-muted-foreground">
+                  Operators: <code>== != &gt; &gt;= &lt; &lt;= in contains</code> · combine with{" "}
+                  <code>and</code>
+                </span>
+              </div>
+
+              <div className="grid gap-1.5">
+                <span className="text-xs text-muted-foreground">
+                  Throttle — limit how often this can trigger the agent
+                </span>
+                <Input
+                  value={throttle}
+                  onChange={(e) => setThrottle(e.target.value)}
+                  placeholder="e.g. once_per:10m"
+                />
+                <span className="text-[11px] text-muted-foreground">
+                  Forms: <code>none</code> · <code>once_per:30s</code> · <code>max:5/1m</code> (units:{" "}
+                  <code>s m h</code>)
+                </span>
+              </div>
             </div>
           </details>
 
           <DialogFooter>
-            <Button type="submit" disabled={create.isPending || grantPermission.isPending}>
+            <Button
+              type="submit"
+              disabled={create.isPending || grantPermission.isPending || Boolean(filterError)}
+            >
               Subscribe
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** First exact event type in the catalog — the dialog's default selection. */
+const FIRST_EVENT = EVENT_CATALOG[0].events[0];
+
+/**
+ * Fire a synthetic event into the kernel bus to verify a subscription triggers
+ * its agent (and to see the payload shape a filter would run against).
+ */
+function EmitEventDialog() {
+  const [open, setOpen] = useState(false);
+  const [eventType, setEventType] = useState(FIRST_EVENT);
+  const [severity, setSeverity] = useState("info");
+  const [payload, setPayload] = useState(() => payloadSkeleton(FIRST_EVENT));
+  const emit = useEmitEvent();
+
+  // Re-seed the payload editor with the new event's fields when the type changes.
+  function onEventChange(next: string) {
+    setEventType(next);
+    setPayload(payloadSkeleton(next));
+  }
+
+  const payloadError = useMemo(() => {
+    const text = payload.trim();
+    if (!text) return null; // empty → send no payload
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return "Payload must be a JSON object, e.g. { \"severity\": \"critical\" }.";
+      }
+      return null;
+    } catch {
+      return "Payload isn’t valid JSON.";
+    }
+  }, [payload]);
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (payloadError) {
+      toast.error(payloadError);
+      return;
+    }
+    const text = payload.trim();
+    try {
+      await emit.mutateAsync({
+        event_type: eventType,
+        severity,
+        payload: text ? JSON.parse(text) : {},
+      });
+      toast.success(`Emitted ${humanizeEvent(eventType)}`);
+      setOpen(false);
+    } catch (err) {
+      toastError(err);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="secondary">Emit test event</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Emit a test event</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="grid gap-3">
+          <label className="grid gap-1 text-sm">
+            <span className="text-muted-foreground">Event type</span>
+            <Select value={eventType} onChange={(e) => onEventChange(e.target.value)}>
+              {EVENT_CATALOG.map((c) => (
+                <optgroup key={c.value} label={c.label}>
+                  {c.events.map((ev) => (
+                    <option key={ev} value={ev}>{humanizeEvent(ev)}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </Select>
+          </label>
+
+          <label className="grid gap-1 text-sm">
+            <span className="text-muted-foreground">Severity</span>
+            <Select value={severity} onChange={(e) => setSeverity(e.target.value)}>
+              <option value="info">Info</option>
+              <option value="warning">Warning</option>
+              <option value="critical">Critical</option>
+            </Select>
+          </label>
+
+          <label className="grid gap-1 text-sm">
+            <span className="text-muted-foreground">Payload (JSON)</span>
+            <Textarea
+              value={payload}
+              onChange={(e) => setPayload(e.target.value)}
+              rows={7}
+              spellCheck={false}
+              className={`font-mono text-xs ${payloadError ? "border-destructive" : ""}`}
+            />
+            {payloadError && <span className="text-[11px] text-destructive">{payloadError}</span>}
+          </label>
+
+          <DialogFooter>
+            <Button type="submit" disabled={emit.isPending || Boolean(payloadError)}>
+              Emit
             </Button>
           </DialogFooter>
         </form>
@@ -455,13 +641,23 @@ export function EventsPage() {
   const query = useEventSubscriptions();
   const agents = useAgents();
   const del = useDeleteSubscription();
+  const enableSub = useToggleSubscription("enable");
+  const disableSub = useToggleSubscription("disable");
   const [agentFilter, setAgentFilter] = useState("");
 
   // Map agent UUID → display name so the table shows names, not raw ids.
   const agentNameById = new Map((agents.data ?? []).map((a) => [a.id, a.name]));
 
   const columns: Column<EventSubscription>[] = [
-    { key: "filter", header: "Event filter", cell: (s) => <code className="text-xs">{s.event_type_filter}</code> },
+    {
+      key: "filter",
+      header: "Triggers on",
+      cell: (s) => (
+        <span className="font-medium" title={s.event_type_filter}>
+          {prettifyFilter(s.event_type_filter)}
+        </span>
+      ),
+    },
     {
       key: "agent",
       header: "Agent",
@@ -473,18 +669,52 @@ export function EventsPage() {
       cell: (s) => <span className="text-xs text-muted-foreground">{s.payload_filter ?? "—"}</span>,
     },
     { key: "priority", header: "Priority", cell: (s) => s.priority ?? "—" },
+    {
+      key: "throttle",
+      header: "Limit",
+      cell: (s) => <span className="text-xs text-muted-foreground">{prettifyThrottle(s.throttle)}</span>,
+    },
     { key: "enabled", header: "Status", cell: (s) => <StatusBadge status={s.enabled ? "active" : "paused"} /> },
     {
       key: "actions",
       header: "",
       cell: (s) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => del.mutateAsync(String(s.id)).then(() => toast.success("Removed")).catch(toastError)}
-        >
-          Remove
-        </Button>
+        <span className="flex justify-end gap-1">
+          {s.enabled ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                disableSub
+                  .mutateAsync(String(s.id))
+                  .then(() => toast.success("Paused"))
+                  .catch(toastError)
+              }
+            >
+              Pause
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                enableSub
+                  .mutateAsync(String(s.id))
+                  .then(() => toast.success("Resumed"))
+                  .catch(toastError)
+              }
+            >
+              Resume
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => del.mutateAsync(String(s.id)).then(() => toast.success("Removed")).catch(toastError)}
+          >
+            Remove
+          </Button>
+        </span>
       ),
     },
   ];
@@ -506,6 +736,7 @@ export function EventsPage() {
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </Select>
+            <EmitEventDialog />
             <SubscribeAgentDialog />
           </div>
         }

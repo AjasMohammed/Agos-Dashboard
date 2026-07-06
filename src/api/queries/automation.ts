@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client, unwrap } from "../client";
-import type { ScheduleSummary, PipelineSummary, WorkflowSummary } from "../models";
+import type { ScheduleRun, ScheduleSummary, PipelineSummary, WorkflowSummary } from "../models";
 
 // ── Schedules ───────────────────────────────────────────────────────────────
 export const scheduleKeys = { all: ["schedules"] as const };
@@ -21,6 +21,18 @@ export function useCreateSchedule() {
       delivery_mode: string;
     }) => unwrap(await client.POST("/api/v1/schedules", { body })),
     onSuccess: () => qc.invalidateQueries({ queryKey: scheduleKeys.all }),
+  });
+}
+
+/** Run history for one schedule — fetched only while its dialog is open. */
+export function useScheduleRuns(id: string | null) {
+  return useQuery({
+    queryKey: ["schedules", id, "runs"],
+    queryFn: async () =>
+      unwrap<ScheduleRun[]>(
+        await client.GET("/api/v1/schedules/{id}/runs", { params: { path: { id: id! } } }),
+      ),
+    enabled: id != null,
   });
 }
 

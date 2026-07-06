@@ -1,6 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { client, unwrap, unwrapList } from "../client";
-import type { CheckpointSummary, RunTaskRequest, TaskDetail, TaskSummary } from "../models";
+import { ApiError, client, unwrap, unwrapList } from "../client";
+import { useDisconnectedPolling } from "@/realtime/cacheBridge";
+import type {
+  CheckpointSummary,
+  RunTaskRequest,
+  TaskDetail,
+  TaskSummary,
+  TaskTrace,
+} from "../models";
 
 export interface TaskFilter {
   status?: string;
@@ -21,6 +28,9 @@ export function useTasks(filter: TaskFilter) {
     queryKey: taskKeys.list(filter),
     queryFn: async () =>
       unwrapList<TaskSummary>(await client.GET("/api/v1/tasks", { params: { query: filter } })),
+    // Live updates arrive over WS; poll only while the socket is down so the
+    // list doesn't silently go stale during a reconnect.
+    refetchInterval: useDisconnectedPolling(),
   });
 }
 
@@ -36,8 +46,39 @@ export function useTask(id: string) {
 export function useTaskTrace(id: string, enabled: boolean) {
   return useQuery({
     queryKey: taskKeys.trace(id),
-    queryFn: async () =>
-      unwrap<unknown>(await client.GET("/api/v1/tasks/{id}/trace", { params: { path: { id } } })),
+    queryFn: async (): Promise<TaskTrace | null> => {
+      try {
+        // The contract types the trace payload as an untyped `Value`; guard the
+        // one load-bearing field (`iterations`) before trusting the shape, so
+        // backend drift renders the empty state instead of throwing through the
+        // render tree.
+        const raw = unwrap<unknown>(
+          await client.GET("/api/v1/tasks/{id}/trace", { params: { path: { id } } }),
+        );
+        if (
+          !raw ||
+          typeof raw !== "object" ||
+          !Array.isArray((raw as { iterations?: unknown }).iterations)
+        ) {
+          // Present but wrong shape (a 404 is handled in the catch below). Warn
+          // so backend drift is visible rather than silently returning empty.
+          console.warn("task trace payload shape drift", id);
+          return null;
+        }
+        return raw as TaskTrace;
+      } catch (err) {
+        // No trace for this task (pre-trace-system tasks, or a task that was
+        // running across a kernel restart) — show the empty state, not an error.
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    // Live progress: while the task is unfinished (or has no trace yet), poll;
+    // stop once finished_at is set — the persisted trace no longer changes.
+    refetchInterval: (query) => {
+      const trace = query.state.data;
+      return !trace || trace.finished_at == null ? 5000 : false;
+    },
     enabled: enabled && Boolean(id),
   });
 }

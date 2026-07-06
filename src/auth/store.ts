@@ -1,6 +1,10 @@
 import { create } from "zustand";
 
-/** Persist the key across reloads only when refresh is explicitly enabled. */
+/**
+ * Persist the key across reloads only when refresh is explicitly enabled — and
+ * only to `sessionStorage`, so the credential is dropped when the tab closes
+ * (narrows the exfil window versus `localStorage`).
+ */
 const PERSIST = import.meta.env.VITE_REFRESH_ENABLED === "true";
 const STORAGE_KEY = "agentos-panel.auth";
 
@@ -26,7 +30,7 @@ const empty: Session = { apiKey: null, keyId: null, name: null, scopes: [], expi
 function load(): Session {
   if (!PERSIST) return empty;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = sessionStorage.getItem(STORAGE_KEY);
     return raw ? { ...empty, ...(JSON.parse(raw) as Partial<Session>) } : empty;
   } catch {
     return empty;
@@ -36,7 +40,7 @@ function load(): Session {
 function persist(s: Session) {
   if (!PERSIST) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(s));
   } catch {
     /* storage unavailable — stay in-memory */
   }

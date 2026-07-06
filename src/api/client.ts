@@ -9,6 +9,9 @@ import { useAuthStore } from "@/auth/store";
  */
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
+/** Default per-request deadline so a hung/black-holed API rejects instead of spinning forever. */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
 /**
  * A failed API call. `status` is the HTTP status; `code` is the machine-readable
  * `ApiErrorBody.code` (e.g. `NOT_FOUND`, `FORBIDDEN`); `message` is human-facing.
@@ -44,8 +47,35 @@ const authMiddleware: Middleware = {
   },
 };
 
-export const client = createClient<paths>({ baseUrl: API_BASE });
+export const client = createClient<paths>({
+  baseUrl: API_BASE,
+  // No caller passes a per-call signal to the typed client, so overriding
+  // `signal` with a deadline here is safe and gives every request a timeout.
+  fetch: (input) => fetch(input, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),
+});
 client.use(authMiddleware);
+
+/**
+ * `fetch` for the hand-rolled (non-openapi-fetch) calls — multipart upload, SSE
+ * stream, file export. Injects the bearer and clears the auth store on 401 (so
+ * the route guard bounces to `/login`, same as the typed client's middleware),
+ * and applies the default request deadline. Pass `timeoutMs = null` for
+ * streaming responses, whose body is read for far longer than any deadline.
+ */
+export async function authedFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs: number | null = REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  const key = useAuthStore.getState().apiKey;
+  const headers = new Headers(init.headers);
+  if (key) headers.set("Authorization", `Bearer ${key}`);
+  const signal =
+    timeoutMs != null && !init.signal ? AbortSignal.timeout(timeoutMs) : init.signal;
+  const res = await fetch(input, { ...init, headers, signal });
+  if (res.status === 401) useAuthStore.getState().clear();
+  return res;
+}
 
 /** The error body returned by the API on non-2xx responses. */
 interface ApiErrorBody {

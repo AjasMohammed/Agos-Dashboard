@@ -3031,6 +3031,120 @@
         ]
       }
     },
+    "/api/v1/events/subscriptions/{id}/disable": {
+      "post": {
+        "tags": [
+          "events"
+        ],
+        "summary": "`POST /api/v1/events/subscriptions/{id}/disable` — Pause a subscription.",
+        "operationId": "events_disable_subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Subscription id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscription disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Value"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/events/subscriptions/{id}/enable": {
+      "post": {
+        "tags": [
+          "events"
+        ],
+        "summary": "`POST /api/v1/events/subscriptions/{id}/enable` — Activate a subscription.",
+        "operationId": "events_enable_subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Subscription id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscription enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Value"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/api/v1/files": {
       "get": {
         "tags": [
@@ -7353,6 +7467,43 @@
           }
         ]
       }
+    },
+    "/api/v1/ws/ticket": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/ws/ticket` — Mint a short-lived, single-use WebSocket auth\nticket carrying the presented key's scopes. Browsers can't send an\n`Authorization` header on a WS upgrade; the ticket keeps the long-lived key\nout of the URL query string (which lands in proxy logs and history).",
+        "description": "Not audit-logged: a ticket is a seconds-lived derivative of the presented\nkey with identical scopes, minted on every reconnect — logging each mint\nwould flood the audit trail with what is effectively \"key was used\".",
+        "operationId": "auth_ws_ticket",
+        "responses": {
+          "200": {
+            "description": "Single-use WS ticket (seconds-lived)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_WsTicketResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -8787,6 +8938,13 @@
           },
           "status": {
             "type": "string"
+          },
+          "trigger_event_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Event type that triggered this task, if it was created by an event\nsubscription (e.g. `DiskSpaceLow`). Absent for user/scheduled tasks."
           }
         }
       },
@@ -10722,6 +10880,13 @@
               },
               "status": {
                 "type": "string"
+              },
+              "trigger_event_type": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Event type that triggered this task, if it was created by an event\nsubscription (e.g. `DiskSpaceLow`). Absent for user/scheduled tasks."
               }
             }
           }
@@ -12723,6 +12888,35 @@
           }
         }
       },
+      "Envelope_WsTicketResponse": {
+        "type": "object",
+        "description": "Success envelope wrapping a response payload under a `data` key.\n\n`T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or\n`serde_json::Value` for ad-hoc acknowledgement bodies like `{ \"ok\": true }`).",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "A short-lived, single-use WebSocket auth ticket (`POST /api/v1/ws/ticket`).\nConnect with `GET /api/v1/ws?ticket=…` before it expires.",
+            "required": [
+              "ticket",
+              "expires_in"
+            ],
+            "properties": {
+              "expires_in": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Seconds until the ticket expires.",
+                "minimum": 0
+              },
+              "ticket": {
+                "type": "string",
+                "description": "Opaque single-use ticket; carries the minting key's scopes."
+              }
+            }
+          }
+        }
+      },
       "EscalationListQuery": {
         "type": "object",
         "description": "Query filter for `GET /api/v1/escalations`.",
@@ -14047,6 +14241,26 @@
         "properties": {
           "id": {
             "type": "string"
+          }
+        }
+      },
+      "WsTicketResponse": {
+        "type": "object",
+        "description": "A short-lived, single-use WebSocket auth ticket (`POST /api/v1/ws/ticket`).\nConnect with `GET /api/v1/ws?ticket=…` before it expires.",
+        "required": [
+          "ticket",
+          "expires_in"
+        ],
+        "properties": {
+          "expires_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until the ticket expires.",
+            "minimum": 0
+          },
+          "ticket": {
+            "type": "string",
+            "description": "Opaque single-use ticket; carries the minting key's scopes."
           }
         }
       }

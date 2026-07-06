@@ -29,10 +29,11 @@ import {
 } from "@/api/queries/chat";
 import { useAgents } from "@/api/queries/agents";
 import { Markdown } from "@/components/markdown";
+import { MentionTextarea } from "@/components/mention-textarea";
 import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
+import { QueryState } from "@/components/query-state";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -57,6 +58,14 @@ const bubbleMotion = {
   animate: { opacity: 1, y: 0 },
   transition: { duration: 0.2 },
 } as const;
+
+/**
+ * Abort a stream when no BYTES arrive for this long (re-armed via onActivity on
+ * every read, so thinking events and keepalives count as liveness). Catches
+ * genuinely dead connections — a proxy drop with no error frame — which
+ * otherwise leave the composer disabled forever.
+ */
+const STREAM_IDLE_MS = 120_000;
 
 function TypingDots() {
   return (
@@ -231,10 +240,30 @@ function Conversation({
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    // Watchdog: a dropped connection can end the stream without a done/error
+    // frame, which would leave `streaming` set (composer disabled) forever.
+    // Re-armed on every event; on firing it does exactly what onError does.
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const armIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        toastError(new Error("Stream stalled — connection lost"));
+        setStreaming(null);
+        // Restore the failed message, but never clobber text typed mid-stream.
+        setText((cur) => (cur.trim() ? cur : t));
+        controller.abort();
+      }, STREAM_IDLE_MS);
+    };
+    // Any abort (watchdog, unmount, session switch) also kills the timer.
+    controller.signal.addEventListener("abort", () => {
+      if (idleTimer) clearTimeout(idleTimer);
+    });
+    armIdle();
     await streamChatMessage(
       sessionId,
       t,
       {
+        onActivity: armIdle,
         onChunk: (chunk) => setStreaming((s) => (s ? { ...s, assistant: s.assistant + chunk } : s)),
         onToolStart: (name) =>
           setStreaming((s) => (s ? { ...s, tools: [...s.tools, { name }] } : s)),
@@ -252,14 +281,17 @@ function Conversation({
             return { ...s, tools: [...tools, { name, success }] };
           }),
         onDone: () => {
+          if (idleTimer) clearTimeout(idleTimer);
           setStreaming(null);
           qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
           qc.invalidateQueries({ queryKey: chatKeys.sessions });
         },
         onError: (msg) => {
+          if (idleTimer) clearTimeout(idleTimer);
           toastError(new Error(msg));
           setStreaming(null);
-          setText(t);
+          // Restore the failed message, but never clobber text typed mid-stream.
+          setText((cur) => (cur.trim() ? cur : t));
         },
       },
       controller.signal,
@@ -316,40 +348,40 @@ function Conversation({
         </Button>
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
-        {messages.isPending ? (
-          <Skeleton className="h-20 w-full" />
-        ) : (
-          [...(messages.data?.items ?? [])]
-            .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-            .map((m, i) => {
-            if (m.role === "tool") {
-              return (
-                <motion.div key={i} {...bubbleMotion} className="flex">
-                  <ToolCallCard m={m} />
-                </motion.div>
-              );
-            }
-            const mine = m.role === "user";
-            return (
-              <motion.div
-                key={i}
-                {...bubbleMotion}
-                className={cn("flex", mine ? "justify-end" : "justify-start")}
-              >
-                <div
-                  className={cn(
-                    "max-w-[75%] rounded-lg px-3 py-2 text-sm shadow-sm",
-                    mine
-                      ? "whitespace-pre-wrap rounded-br-sm bg-primary text-primary-foreground"
-                      : "rounded-bl-sm bg-muted",
-                  )}
-                >
-                  {mine ? m.content : <Markdown>{m.content}</Markdown>}
-                </div>
-              </motion.div>
-            );
-          })
-        )}
+        <QueryState query={messages} skeleton={<Skeleton className="h-20 w-full" />}>
+          {(data) =>
+            [...data.items]
+              .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+              .map((m, i) => {
+                if (m.role === "tool") {
+                  return (
+                    <motion.div key={i} {...bubbleMotion} className="flex">
+                      <ToolCallCard m={m} />
+                    </motion.div>
+                  );
+                }
+                const mine = m.role === "user";
+                return (
+                  <motion.div
+                    key={i}
+                    {...bubbleMotion}
+                    className={cn("flex", mine ? "justify-end" : "justify-start")}
+                  >
+                    <div
+                      className={cn(
+                        "max-w-[75%] rounded-lg px-3 py-2 text-sm shadow-sm",
+                        mine
+                          ? "whitespace-pre-wrap rounded-br-sm bg-primary text-primary-foreground"
+                          : "rounded-bl-sm bg-muted",
+                      )}
+                    >
+                      {mine ? m.content : <Markdown>{m.content}</Markdown>}
+                    </div>
+                  </motion.div>
+                );
+              })
+          }
+        </QueryState>
         {streaming && (
           <>
             <motion.div {...bubbleMotion} className="flex justify-end">
@@ -374,11 +406,12 @@ function Conversation({
         <div ref={bottomRef} />
       </div>
       <form onSubmit={onSend} className="flex items-end gap-2 border-t border-border p-3">
-        <Textarea
+        <MentionTextarea
           value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Message… (streams the reply)"
-          className="min-h-[44px] flex-1 resize-none"
+          onValueChange={setText}
+          placeholder="Message… (@ mentions an uploaded file; streams the reply)"
+          containerClassName="flex-1"
+          className="min-h-[44px] resize-none"
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
