@@ -52,6 +52,20 @@ const columns: Column<AgentSummary>[] = [
     header: "Connected",
     cell: (a) => <span className="text-muted-foreground">{relativeTime(a.connected_at)}</span>,
   },
+  {
+    key: "last_active",
+    header: "Last active",
+    // Liveness: when the agent last acted or was woken (task/message/heartbeat).
+    // The epoch sentinel (older payloads without the field) renders as "never".
+    cell: (a) => {
+      const stale = !a.last_active || new Date(a.last_active).getFullYear() < 2000;
+      return (
+        <span className="text-muted-foreground">
+          {stale ? "never" : relativeTime(a.last_active)}
+        </span>
+      );
+    },
+  },
 ];
 
 export function AgentsPage() {

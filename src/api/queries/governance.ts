@@ -1,6 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client, unwrap } from "../client";
-import type { Escalation, PrefProposal, ProposalStats, Role, AuditEntrySummary } from "../models";
+import type {
+  Escalation,
+  PrefProposal,
+  ProposalStats,
+  Role,
+  AuditEntrySummary,
+  ApprovalPolicy,
+  AddApprovalPolicyBody,
+} from "../models";
 
 // ── Escalations ─────────────────────────────────────────────────────────────
 export const escalationKeys = { all: ["escalations"] as const };
@@ -24,6 +32,36 @@ export function useResolveEscalation() {
       );
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: escalationKeys.all }),
+  });
+}
+
+// ── Approval policies (standing grants) ─────────────────────────────────────
+export const approvalPolicyKeys = { all: ["approval-policies"] as const };
+
+export function useApprovalPolicies() {
+  return useQuery({
+    queryKey: approvalPolicyKeys.all,
+    queryFn: async () =>
+      unwrap<ApprovalPolicy[]>(await client.GET("/api/v1/approval-policies")),
+  });
+}
+
+export function useAddApprovalPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: AddApprovalPolicyBody) =>
+      unwrap<ApprovalPolicy>(await client.POST("/api/v1/approval-policies", { body })),
+    onSuccess: () => qc.invalidateQueries({ queryKey: approvalPolicyKeys.all }),
+  });
+}
+
+export function useRevokeApprovalPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      unwrap(await client.DELETE("/api/v1/approval-policies/{id}", { params: { path: { id } } }));
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: approvalPolicyKeys.all }),
   });
 }
 

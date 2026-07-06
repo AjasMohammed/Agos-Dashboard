@@ -11,6 +11,9 @@ import {
   usePrefStats,
   useReviewProposal,
   useAuditLogs,
+  useApprovalPolicies,
+  useAddApprovalPolicy,
+  useRevokeApprovalPolicy,
 } from "@/api/queries/governance";
 import { PageHeader } from "@/components/page-header";
 import { QueryState } from "@/components/query-state";
@@ -31,6 +34,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { useAuthStore } from "@/auth/store";
 import { cn } from "@/lib/utils";
 import { confirm } from "@/lib/confirm";
 import { toastError } from "@/lib/errors";
@@ -654,6 +658,178 @@ export function AuditPage() {
           <div className="divide-y divide-border rounded-lg border border-border px-3">
             {items.map((e, i) => (
               <EventLogItem key={i} entry={e} />
+            ))}
+          </div>
+        )}
+      </QueryState>
+    </div>
+  );
+}
+
+// ── Standing grants (approval policies) ──────────────────────────────────────
+// Persisted "allow always" overrides: for a tool (optionally scoped to a payload
+// path glob and/or one agent), the approval hook lifts Prompt→Allow instead of
+// escalating. `expires_at` gives a time-boxed grant swept by the kernel.
+const GRANT_TTLS: { label: string; hours: number | null }[] = [
+  { label: "1 hour", hours: 1 },
+  { label: "8 hours", hours: 8 },
+  { label: "24 hours", hours: 24 },
+  { label: "7 days", hours: 24 * 7 },
+  { label: "Never", hours: null },
+];
+
+function AddGrantDialog() {
+  const [open, setOpen] = useState(false);
+  const [tool, setTool] = useState("");
+  const [pathGlob, setPathGlob] = useState("");
+  const [ttlHours, setTtlHours] = useState<number | null>(24);
+  const add = useAddApprovalPolicy();
+
+  function reset() {
+    setTool("");
+    setPathGlob("");
+    setTtlHours(24);
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!tool.trim()) return;
+    // Compute expiry client-side; the API accepts an RFC3339 timestamp.
+    const expires_at =
+      ttlHours == null ? undefined : new Date(Date.now() + ttlHours * 3600_000).toISOString();
+    try {
+      await add.mutateAsync({
+        tool_name: tool.trim(),
+        path_glob: pathGlob.trim() || undefined,
+        expires_at,
+      });
+      toast.success("Standing grant added");
+      reset();
+      setOpen(false);
+    } catch (err) {
+      toastError(err);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) reset();
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button size="sm">Add grant</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <form onSubmit={submit}>
+          <DialogHeader>
+            <DialogTitle>New standing grant</DialogTitle>
+            <DialogDescription>
+              Auto-approve a tool so matching calls stop escalating until the grant expires.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-3">
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Tool name</label>
+              <Input
+                value={tool}
+                onChange={(e) => setTool(e.target.value)}
+                placeholder="e.g. shell-exec"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Path glob (optional)</label>
+              <Input
+                value={pathGlob}
+                onChange={(e) => setPathGlob(e.target.value)}
+                placeholder="e.g. /tmp/**"
+              />
+              <p className="text-xs text-muted-foreground">
+                Scope to a payload <code>path</code>; leave blank to match any.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Expires</label>
+              <div className="flex flex-wrap gap-1.5">
+                {GRANT_TTLS.map((t) => (
+                  <Button
+                    key={t.label}
+                    type="button"
+                    size="sm"
+                    variant={ttlHours === t.hours ? "default" : "outline"}
+                    onClick={() => setTtlHours(t.hours)}
+                  >
+                    {t.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="submit" disabled={add.isPending || !tool.trim()}>
+              {add.isPending ? "Adding…" : "Add grant"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function StandingGrantsPage() {
+  const query = useApprovalPolicies();
+  const revoke = useRevokeApprovalPolicy();
+  const canWrite = useAuthStore((s) => s.can("approvals:w"));
+  async function onRevoke(id: number) {
+    if (!(await confirm({ title: "Revoke grant?", destructive: true, confirmLabel: "Revoke" }))) return;
+    revoke
+      .mutateAsync(id)
+      .then(() => toast.success("Revoked"))
+      .catch(toastError);
+  }
+  return (
+    <div>
+      <PageHeader
+        title="Standing grants"
+        description="Persisted allow-always approvals — tool calls matching a grant skip the escalation queue until it expires."
+        actions={canWrite ? <AddGrantDialog /> : null}
+      />
+      <QueryState
+        query={query}
+        isEmpty={(d) => d.length === 0}
+        empty={<EmptyState icon={ShieldAlert} title="No standing grants" />}
+      >
+        {(items) => (
+          <div className="space-y-2">
+            {items.map((p) => (
+              <Card key={p.id}>
+                <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                  <div className="min-w-0">
+                    <p className="font-medium">
+                      <code>{p.tool_name}</code>
+                      {p.path_glob ? <span className="text-muted-foreground"> · {p.path_glob}</span> : null}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {p.agent_id ? `agent ${p.agent_id.slice(0, 8)} · ` : "all agents · "}
+                      granted {relativeTime(p.granted_at)} by {p.granted_by}
+                      {p.expires_at ? ` · expires ${relativeTime(p.expires_at)}` : " · never expires"}
+                    </p>
+                  </div>
+                  {canWrite && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={revoke.isPending}
+                      onClick={() => onRevoke(p.id)}
+                    >
+                      Revoke
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
             ))}
           </div>
         )}

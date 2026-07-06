@@ -26,6 +26,7 @@ import {
   RolesPage,
   PreferencesPage,
   AuditPage,
+  StandingGrantsPage,
 } from "@/features/govern/govern-pages";
 import {
   PluginsPage,
@@ -35,6 +36,7 @@ import {
   WebhooksPage,
   EventsPage,
   MarketplacePage,
+  SkillsPage,
 } from "@/features/integrate/integrate-pages";
 import { SchedulesPage, PipelinesPage } from "@/features/automation/automation-pages";
 import { PipelineBuilderPage } from "@/features/automation/builder/lazy";
@@ -56,6 +58,7 @@ const SECTION_PAGES: Record<string, FC> = {
   "/pipelines": PipelinesPage,
   "/schedules": SchedulesPage,
   "/escalations": EscalationsPage,
+  "/approval-policies": StandingGrantsPage,
   "/prefs": PreferencesPage,
   "/roles": RolesPage,
   "/audit": AuditPage,
@@ -66,6 +69,7 @@ const SECTION_PAGES: Record<string, FC> = {
   "/webhooks": WebhooksPage,
   "/events": EventsPage,
   "/marketplace": MarketplacePage,
+  "/skills": SkillsPage,
   "/files": FilesPage,
   "/scratchpad": ScratchpadPage,
   "/secrets": SecretsPage,

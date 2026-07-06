@@ -7,6 +7,7 @@ import {
   Workflow,
   CalendarClock,
   ShieldAlert,
+  ShieldCheck,
   SlidersHorizontal,
   KeyRound,
   ScrollText,
@@ -25,6 +26,7 @@ import {
   Lock,
   NotebookPen,
   Store,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 
@@ -64,6 +66,7 @@ export const NAV: NavGroup[] = [
     label: "Govern",
     items: [
       { label: "Escalations", to: "/escalations", icon: ShieldAlert, scope: "escalations:r" },
+      { label: "Standing grants", to: "/approval-policies", icon: ShieldCheck, scope: "approvals:r" },
       { label: "Preferences", to: "/prefs", icon: SlidersHorizontal, scope: "prefs:r" },
       { label: "Roles", to: "/roles", icon: KeyRound, scope: "roles:r" },
       { label: "Audit", to: "/audit", icon: ScrollText, scope: "audit:r" },
@@ -79,6 +82,7 @@ export const NAV: NavGroup[] = [
       { label: "Webhooks", to: "/webhooks", icon: Webhook, scope: "webhooks:r" },
       { label: "Events", to: "/events", icon: Activity, scope: "events:r" },
       { label: "Marketplace", to: "/marketplace", icon: Store, scope: "marketplace:r" },
+      { label: "Skills", to: "/skills", icon: Sparkles, scope: "skills:r" },
     ],
   },
   {

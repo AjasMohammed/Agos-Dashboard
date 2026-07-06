@@ -5,9 +5,12 @@ import { toast } from "sonner";
 import {
   useAgent,
   useAgentIdentity,
+  useAgentInbox,
+  useAgentMemory,
   useDisconnectAgent,
   useGrantPermission,
   useRevokePermission,
+  type MemoryTier,
 } from "@/api/queries/agents";
 import { PageHeader } from "@/components/page-header";
 import { QueryState } from "@/components/query-state";
@@ -20,6 +23,128 @@ import { confirm } from "@/lib/confirm";
 import { toastError } from "@/lib/errors";
 import { relativeTime } from "@/lib/format";
 import { AgentSettingsDialog } from "./agent-settings-dialog";
+
+const MEMORY_TIERS: { tier: MemoryTier; label: string }[] = [
+  { tier: "episodic", label: "Episodic" },
+  { tier: "semantic", label: "Semantic" },
+  { tier: "procedural", label: "Procedural" },
+];
+
+/** Read-only browse/search of an agent's 3-tier memory. */
+function MemoryBrowser({ agentId }: { agentId: string }) {
+  const [tier, setTier] = useState<MemoryTier>("episodic");
+  const [q, setQ] = useState("");
+  const query = useAgentMemory(agentId, tier, q);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Memory</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {MEMORY_TIERS.map((t) => (
+            <Button
+              key={t.tier}
+              size="sm"
+              variant={tier === t.tier ? "default" : "outline"}
+              onClick={() => setTier(t.tier)}
+            >
+              {t.label}
+            </Button>
+          ))}
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search this tier…"
+            className="ml-auto max-w-xs"
+          />
+        </div>
+        <QueryState
+          query={query}
+          isEmpty={(d) => d.length === 0}
+          empty={
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No {tier} memory{q.trim() ? " matches" : " yet"}.
+            </p>
+          }
+        >
+          {(items) => (
+            <div className="space-y-2">
+              {items.map((m) => (
+                <div key={`${m.tier}-${m.id}`} className="rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="min-w-0 truncate text-sm font-medium">{m.title}</p>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Badge variant="muted">{m.kind}</Badge>
+                      {m.score != null && (
+                        <span className="text-xs text-muted-foreground">{m.score.toFixed(2)}</span>
+                      )}
+                    </div>
+                  </div>
+                  {m.content && (
+                    <p className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-xs text-muted-foreground">
+                      {m.content}
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">{relativeTime(m.created_at)}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </QueryState>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Read-only agent-to-agent message timeline. */
+function InboxTimeline({ agentId }: { agentId: string }) {
+  const query = useAgentInbox(agentId);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Inbox · agent-to-agent</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <QueryState
+          query={query}
+          isEmpty={(d) => d.length === 0}
+          empty={
+            <p className="py-6 text-center text-sm text-muted-foreground">No messages yet.</p>
+          }
+        >
+          {(items) => (
+            <div className="space-y-2">
+              {items.map((m) => (
+                <div key={m.id} className="rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="min-w-0 truncate text-sm">
+                      <code className="text-xs">{m.from.slice(0, 8)}</code>
+                      <span className="text-muted-foreground"> → {m.to}</span>
+                    </p>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Badge variant="muted">{m.kind}</Badge>
+                      {m.signed && <span className="text-xs text-muted-foreground">signed</span>}
+                    </div>
+                  </div>
+                  {m.preview && (
+                    <p className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-xs text-muted-foreground">
+                      {m.preview}
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {relativeTime(m.timestamp)}
+                    {m.reply_to ? " · reply" : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </QueryState>
+      </CardContent>
+    </Card>
+  );
+}
 
 export function AgentDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
@@ -195,6 +320,10 @@ export function AgentDetailPage() {
                   </CardContent>
                 </Card>
               )}
+
+              <MemoryBrowser agentId={a.id} />
+
+              <InboxTimeline agentId={a.id} />
 
               {detail.cost_snapshot != null && (
                 <Card>

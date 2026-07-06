@@ -6,8 +6,12 @@ import type {
   AgentIdentity,
   AgentSummary,
   ConnectAgentRequest,
+  InboxMessage,
+  MemoryItem,
   UpdateAgentSettingsRequest,
 } from "../models";
+
+export type MemoryTier = "episodic" | "semantic" | "procedural";
 
 export const agentKeys = {
   all: ["agents"] as const,
@@ -127,5 +131,42 @@ export function useUpdateAgentSettings(name: string) {
       );
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.detail(name) }),
+  });
+}
+
+/**
+ * Browse or search one memory tier for an agent. Empty `q` → most-recent items;
+ * non-empty `q` → tier search. Read-only. `placeholderData` keeps the prior list
+ * visible while the tier switches or the query is debounced by typing.
+ */
+export function useAgentMemory(agentId: string, tier: MemoryTier, q: string) {
+  const trimmed = q.trim();
+  return useQuery({
+    queryKey: [...agentKeys.detail(agentId), "memory", tier, trimmed],
+    queryFn: async () =>
+      unwrap<MemoryItem[]>(
+        await client.GET("/api/v1/agents/{id}/memory/{tier}", {
+          params: {
+            path: { id: agentId, tier },
+            query: trimmed ? { q: trimmed } : {},
+          },
+        }),
+      ),
+    enabled: Boolean(agentId),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/** Agent-to-agent message timeline (read-only). Newest window, oldest-first. */
+export function useAgentInbox(agentId: string, limit = 100) {
+  return useQuery({
+    queryKey: [...agentKeys.detail(agentId), "inbox", limit],
+    queryFn: async () =>
+      unwrap<InboxMessage[]>(
+        await client.GET("/api/v1/agents/{id}/inbox", {
+          params: { path: { id: agentId }, query: { limit } },
+        }),
+      ),
+    enabled: Boolean(agentId),
   });
 }

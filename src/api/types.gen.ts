@@ -81,6 +81,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/{id}/inbox` — Agent-to-agent message history for an agent
+         *     (messages it sent, received directly, or received via broadcast), oldest first.
+         */
+        get: operations["agent_inbox"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{id}/memory/{tier}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/{id}/memory/{tier}` — Browse or search an agent's memory.
+         * @description `tier` is one of `episodic` / `semantic` / `procedural`. With `?q=` set the
+         *     tier is searched (FTS/embedding, ranked); without it the most-recent items
+         *     are returned. Read-only.
+         */
+        get: operations["agent_memory_browse"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{name}": {
         parameters: {
             query?: never;
@@ -202,6 +244,45 @@ export interface paths {
         /** `POST /api/v1/agents/{name}/settings` — Update editable settings for an agent. */
         post: operations["agents_update_settings"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approval-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/approval-policies` — List active standing grants. */
+        get: operations["approval_policies_list"];
+        put?: never;
+        /**
+         * `POST /api/v1/approval-policies` — Add a standing grant.
+         * @description Returns 409 Conflict if an active policy already exists for the same
+         *     (tool_name, path_glob, agent_id) scope.
+         */
+        post: operations["approval_policies_add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approval-policies/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** `DELETE /api/v1/approval-policies/{id}` — Revoke a standing grant. */
+        delete: operations["approval_policies_revoke"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1673,6 +1754,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/skills` — List installed skills. */
+        get: operations["skills_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/skills/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/skills/{name}` — Get one skill's full detail. */
+        get: operations["skills_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/status": {
         parameters: {
             query?: never;
@@ -1989,6 +2104,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Request body for `POST /api/v1/approval-policies`. */
+        AddApprovalPolicyRequest: {
+            /** @description Optional agent UUID to scope to; omit to apply to every agent. */
+            agent_id?: string | null;
+            /**
+             * Format: date-time
+             * @description Optional expiry (RFC3339); omit for a permanent grant.
+             */
+            expires_at?: string | null;
+            /** @description Optional payload `path` glob to scope the grant (e.g. `"/tmp/**"`). */
+            path_glob?: string | null;
+            /** @description Tool this standing grant auto-approves (matched exactly). */
+            tool_name: string;
+        };
         ApiAgentDetail: {
             cost_snapshot?: Record<string, never> | null;
             permissions: string[];
@@ -2016,6 +2145,13 @@ export interface components {
             /** Format: date-time */
             connected_at: string;
             id: string;
+            /**
+             * Format: date-time
+             * @description Last time the agent acted or was woken (by a task, message, or heartbeat).
+             *     Drives the liveness indicator; also what the heartbeat scheduler reads to
+             *     decide which idle agents are due for a wakeup.
+             */
+            last_active?: string;
             model: string;
             name: string;
             provider: string;
@@ -2023,6 +2159,20 @@ export interface components {
             status: string;
             /** @description Whether the connected LLM adapter will emit native image blocks for this agent. */
             supports_images?: boolean;
+        };
+        /** @description A persisted "allow always" approval policy (standing grant). */
+        ApiApprovalPolicy: {
+            agent_id?: string | null;
+            /** Format: date-time */
+            expires_at?: string | null;
+            /** Format: date-time */
+            granted_at: string;
+            granted_by: string;
+            /** Format: int64 */
+            id: number;
+            path_glob?: string | null;
+            source: string;
+            tool_name: string;
         };
         /** @description Summary of a connected bidirectional channel instance. */
         ApiChannelSummary: {
@@ -2282,6 +2432,27 @@ export interface components {
             /** @description RFC3339 (or `YYYY-MM-DDTHH:MM:SSZ`) upload timestamp. */
             uploaded_at: string;
         };
+        /** @description One agent-to-agent message in the timeline. */
+        ApiInboxMessage: {
+            /** @description Sender agent id (UUID). */
+            from: string;
+            id: string;
+            /** @description Content kind: `text` | `structured` | `delegation` | `result`. */
+            kind: string;
+            /** @description Human-readable content preview (truncated). */
+            preview: string;
+            /** @description Id of the message this replies to, if any. */
+            reply_to?: string | null;
+            /**
+             * @description Whether the message carried a sender signature (presence only — not
+             *     re-verified here).
+             */
+            signed: boolean;
+            /** Format: date-time */
+            timestamp: string;
+            /** @description Rendered target: `direct:<uuid>`, `name:<n>`, `group:<id>`, or `broadcast`. */
+            to: string;
+        };
         /** @description Management metadata for an API key (never includes key material). */
         ApiKeyMeta: {
             /** Format: date-time */
@@ -2339,6 +2510,32 @@ export interface components {
             failure_count: number;
             /** Format: int64 */
             total_calls: number;
+        };
+        /** @description A single memory item, normalized across all three tiers. */
+        ApiMemoryItem: {
+            /** @description Body text (episodic content, semantic fact, procedure description). */
+            content: string;
+            /**
+             * Format: date-time
+             * @description Creation time — except procedural items, which carry `updated_at` so the
+             *     timestamp matches that tier's recency ordering.
+             */
+            created_at: string;
+            /** @description Tier-local id (episodic rowid, semantic/procedural UUID) as a string. */
+            id: string;
+            /** @description Sub-kind: the episodic entry type, `fact`, or `procedure`. */
+            kind: string;
+            /** @description Tier-specific extras (tags, use_count, success/failure counts, …). */
+            metadata: unknown;
+            /**
+             * Format: float
+             * @description Search relevance (RRF fused score) when `q` was supplied; `null` in browse mode.
+             */
+            score?: number | null;
+            /** @description `episodic` | `semantic` | `procedural`. */
+            tier: string;
+            /** @description Short label (episodic summary, semantic key, procedure name). */
+            title: string;
         };
         /** @description Lightweight scratchpad page summary. Mirrors `agentos_scratch::PageSummary`. */
         ApiPageSummary: {
@@ -2489,6 +2686,35 @@ export interface components {
             title: string;
             /** @description RFC3339 last-updated timestamp. */
             updated_at: string;
+        };
+        /** @description Full skill detail including required tools/permissions, budget, and prompt. */
+        ApiSkillDetail: {
+            default_model?: string | null;
+            default_provider?: string | null;
+            license?: string | null;
+            /** Format: double */
+            max_cost_per_run: number;
+            /** Format: int64 */
+            max_tokens_per_run: number;
+            permissions_required: string[];
+            summary: components["schemas"]["ApiSkillSummary"];
+            /** @description Full system-prompt text for the skill's agent. */
+            system_prompt: string;
+            tools_optional: string[];
+            tools_required: string[];
+        };
+        /** @description A skill in the registry, list view. */
+        ApiSkillSummary: {
+            author: string;
+            description: string;
+            /** @description Kernel events that trigger the skill, if any. */
+            events?: string[];
+            name: string;
+            roles?: string[];
+            /** @description Cron schedule for autonomous runs, if any. */
+            schedule?: string | null;
+            trust_tier: string;
+            version: string;
         };
         ApiTaskDetail: {
             agent_name?: string | null;
@@ -2862,6 +3088,13 @@ export interface components {
                 /** Format: date-time */
                 connected_at: string;
                 id: string;
+                /**
+                 * Format: date-time
+                 * @description Last time the agent acted or was woken (by a task, message, or heartbeat).
+                 *     Drives the liveness indicator; also what the heartbeat scheduler reads to
+                 *     decide which idle agents are due for a wakeup.
+                 */
+                last_active?: string;
                 model: string;
                 name: string;
                 provider: string;
@@ -2869,6 +3102,28 @@ export interface components {
                 status: string;
                 /** @description Whether the connected LLM adapter will emit native image blocks for this agent. */
                 supports_images?: boolean;
+            };
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_ApiApprovalPolicy: {
+            /** @description A persisted "allow always" approval policy (standing grant). */
+            data: {
+                agent_id?: string | null;
+                /** Format: date-time */
+                expires_at?: string | null;
+                /** Format: date-time */
+                granted_at: string;
+                granted_by: string;
+                /** Format: int64 */
+                id: number;
+                path_glob?: string | null;
+                source: string;
+                tool_name: string;
             };
         };
         /**
@@ -3259,6 +3514,30 @@ export interface components {
          *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
          *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
          */
+        Envelope_ApiSkillDetail: {
+            /** @description Full skill detail including required tools/permissions, budget, and prompt. */
+            data: {
+                default_model?: string | null;
+                default_provider?: string | null;
+                license?: string | null;
+                /** Format: double */
+                max_cost_per_run: number;
+                /** Format: int64 */
+                max_tokens_per_run: number;
+                permissions_required: string[];
+                summary: components["schemas"]["ApiSkillSummary"];
+                /** @description Full system-prompt text for the skill's agent. */
+                system_prompt: string;
+                tools_optional: string[];
+                tools_required: string[];
+            };
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
         Envelope_ApiTaskDetail: {
             data: {
                 agent_name?: string | null;
@@ -3613,6 +3892,13 @@ export interface components {
                 /** Format: date-time */
                 connected_at: string;
                 id: string;
+                /**
+                 * Format: date-time
+                 * @description Last time the agent acted or was woken (by a task, message, or heartbeat).
+                 *     Drives the liveness indicator; also what the heartbeat scheduler reads to
+                 *     decide which idle agents are due for a wakeup.
+                 */
+                last_active?: string;
                 model: string;
                 name: string;
                 provider: string;
@@ -3620,6 +3906,27 @@ export interface components {
                 status: string;
                 /** @description Whether the connected LLM adapter will emit native image blocks for this agent. */
                 supports_images?: boolean;
+            }[];
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_Vec_ApiApprovalPolicy: {
+            data: {
+                agent_id?: string | null;
+                /** Format: date-time */
+                expires_at?: string | null;
+                /** Format: date-time */
+                granted_at: string;
+                granted_by: string;
+                /** Format: int64 */
+                id: number;
+                path_glob?: string | null;
+                source: string;
+                tool_name: string;
             }[];
         };
         /**
@@ -3760,6 +4067,34 @@ export interface components {
          *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
          *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
          */
+        Envelope_Vec_ApiInboxMessage: {
+            data: {
+                /** @description Sender agent id (UUID). */
+                from: string;
+                id: string;
+                /** @description Content kind: `text` | `structured` | `delegation` | `result`. */
+                kind: string;
+                /** @description Human-readable content preview (truncated). */
+                preview: string;
+                /** @description Id of the message this replies to, if any. */
+                reply_to?: string | null;
+                /**
+                 * @description Whether the message carried a sender signature (presence only — not
+                 *     re-verified here).
+                 */
+                signed: boolean;
+                /** Format: date-time */
+                timestamp: string;
+                /** @description Rendered target: `direct:<uuid>`, `name:<n>`, `group:<id>`, or `broadcast`. */
+                to: string;
+            }[];
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
         Envelope_Vec_ApiKeyMeta: {
             data: {
                 /** Format: date-time */
@@ -3815,6 +4150,39 @@ export interface components {
                 transport?: string | null;
                 /** @description http URL, if persisted. */
                 url?: string | null;
+            }[];
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_Vec_ApiMemoryItem: {
+            data: {
+                /** @description Body text (episodic content, semantic fact, procedure description). */
+                content: string;
+                /**
+                 * Format: date-time
+                 * @description Creation time — except procedural items, which carry `updated_at` so the
+                 *     timestamp matches that tier's recency ordering.
+                 */
+                created_at: string;
+                /** @description Tier-local id (episodic rowid, semantic/procedural UUID) as a string. */
+                id: string;
+                /** @description Sub-kind: the episodic entry type, `fact`, or `procedure`. */
+                kind: string;
+                /** @description Tier-specific extras (tags, use_count, success/failure counts, …). */
+                metadata: unknown;
+                /**
+                 * Format: float
+                 * @description Search relevance (RRF fused score) when `q` was supplied; `null` in browse mode.
+                 */
+                score?: number | null;
+                /** @description `episodic` | `semantic` | `procedural`. */
+                tier: string;
+                /** @description Short label (episodic summary, semantic key, procedure name). */
+                title: string;
             }[];
         };
         /**
@@ -3941,6 +4309,26 @@ export interface components {
                 run_count: number;
                 /** @description `active` | `paused` | `disabled` for cron; `pending` for once/timer. */
                 state: string;
+            }[];
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_Vec_ApiSkillSummary: {
+            data: {
+                author: string;
+                description: string;
+                /** @description Kernel events that trigger the skill, if any. */
+                events?: string[];
+                name: string;
+                roles?: string[];
+                /** @description Cron schedule for autonomous runs, if any. */
+                schedule?: string | null;
+                trust_tier: string;
+                version: string;
             }[];
         };
         /**
@@ -4849,6 +5237,98 @@ export interface operations {
             };
         };
     };
+    agent_inbox: {
+        parameters: {
+            query?: {
+                /** @description Max messages to return, newest window (default 50, capped 200). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Agent ID (UUID) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Message timeline */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Vec_ApiInboxMessage"];
+                };
+            };
+            /** @description Bad agent id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    agent_memory_browse: {
+        parameters: {
+            query?: {
+                /** @description Search query. When empty, returns the most-recent items (browse mode). */
+                q?: string;
+                /** @description Max items to return (default 50, capped at 200). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Agent ID (UUID) */
+                id: string;
+                /** @description Memory tier: episodic | semantic | procedural */
+                tier: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Memory items */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Vec_ApiMemoryItem"];
+                };
+            };
+            /** @description Bad agent id or unknown tier */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     agents_detail: {
         parameters: {
             query?: never;
@@ -5289,6 +5769,118 @@ export interface operations {
                 };
             };
             /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    approval_policies_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active approval policies */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Vec_ApiApprovalPolicy"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    approval_policies_add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddApprovalPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Policy created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiApprovalPolicy"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Duplicate policy for this scope */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    approval_policies_revoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Approval policy ID */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Policy revoked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Policy not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9165,6 +9757,76 @@ export interface operations {
                 };
             };
             /** @description Secret not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    skills_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Installed skills */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Vec_ApiSkillSummary"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    skills_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Skill name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Skill detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiSkillDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Skill not found */
             404: {
                 headers: {
                     [name: string]: unknown;

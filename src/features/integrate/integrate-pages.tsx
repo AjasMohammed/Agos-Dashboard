@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Puzzle, Radio, Plug, Link2, Webhook, Activity, Store } from "lucide-react";
+import { Puzzle, Radio, Plug, Link2, Webhook, Activity, Store, Sparkles } from "lucide-react";
 import { client, unwrap } from "@/api/client";
 import {
   usePlugins,
@@ -21,6 +21,8 @@ import {
   useDeleteSubscription,
   useToggleSubscription,
   useEmitEvent,
+  useSkills,
+  useSkill,
 } from "@/api/queries/extensibility";
 import { useAgents, useAgent, useGrantAgentPermission } from "@/api/queries/agents";
 import {
@@ -799,6 +801,124 @@ export function MarketplacePage() {
           </div>
         )}
       </QueryState>
+    </div>
+  );
+}
+
+// ── Skills (read-only library) ────────────────────────────────────────────────
+function SkillTagRow({ label, tags }: { label: string; tags: string[] }) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <div className="mt-1 flex flex-wrap gap-1">
+        {tags.map((t) => (
+          <Badge key={t} variant="muted">
+            {t}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function SkillsPage() {
+  const query = useSkills();
+  const [selected, setSelected] = useState<string | null>(null);
+  const detail = useSkill(selected ?? "", selected != null);
+  return (
+    <div>
+      <PageHeader
+        title="Skills"
+        description="Installed skills — reusable agent capabilities defined by SKILL.toml + a system prompt."
+      />
+      <QueryState
+        query={query}
+        isEmpty={(d) => d.length === 0}
+        empty={<EmptyState icon={Sparkles} title="No skills installed" />}
+      >
+        {(items) => (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {items.map((s) => (
+              <button key={s.name} className="text-left" onClick={() => setSelected(s.name)}>
+                <div className="h-full rounded-lg border border-border p-4 transition-colors hover:border-primary/50">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="min-w-0 truncate font-medium">{s.name}</p>
+                    <Badge variant="muted">{s.trust_tier}</Badge>
+                  </div>
+                  <p className="mt-1 max-h-10 overflow-hidden text-sm text-muted-foreground">
+                    {s.description}
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    v{s.version} · {s.author}
+                    {s.roles && s.roles.length ? ` · ${s.roles.join(", ")}` : ""}
+                    {s.schedule ? ` · ⏱ ${s.schedule}` : ""}
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </QueryState>
+      <Dialog open={selected != null} onOpenChange={(o) => !o && setSelected(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{selected}</DialogTitle>
+          </DialogHeader>
+          <QueryState query={detail}>
+            {(d) => (
+              <div className="space-y-3 text-sm">
+                <p className="text-muted-foreground">{d.summary.description}</p>
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                  <div>
+                    <p className="text-muted-foreground">Version</p>
+                    <p>{d.summary.version}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Author</p>
+                    <p>{d.summary.author}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Trust tier</p>
+                    <p>{d.summary.trust_tier}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Model</p>
+                    <p>{d.default_model ?? d.default_provider ?? "default"}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Max cost/run</p>
+                    <p>${d.max_cost_per_run.toFixed(2)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Max tokens/run</p>
+                    <p>{d.max_tokens_per_run.toLocaleString()}</p>
+                  </div>
+                </div>
+                {d.tools_required.length > 0 && (
+                  <SkillTagRow label="Tools required" tags={d.tools_required} />
+                )}
+                {d.tools_optional.length > 0 && (
+                  <SkillTagRow label="Tools optional" tags={d.tools_optional} />
+                )}
+                {d.permissions_required.length > 0 && (
+                  <SkillTagRow label="Permissions" tags={d.permissions_required} />
+                )}
+                {d.summary.events && d.summary.events.length > 0 && (
+                  <SkillTagRow label="Event triggers" tags={d.summary.events} />
+                )}
+                <details>
+                  <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                    System prompt
+                  </summary>
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">
+                    {d.system_prompt}
+                  </pre>
+                </details>
+              </div>
+            )}
+          </QueryState>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

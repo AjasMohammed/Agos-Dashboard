@@ -74,6 +74,10 @@ export type ChatMessage = S["ApiChatMessage"];
 // Automation
 export type ScheduleSummary = S["ApiScheduleSummary"];
 export type ScheduleRun = S["ApiScheduleRun"];
+export type MemoryItem = S["ApiMemoryItem"];
+export type SkillSummary = S["ApiSkillSummary"];
+export type SkillDetail = S["ApiSkillDetail"];
+export type InboxMessage = S["ApiInboxMessage"];
 export type PipelineSummary = S["ApiPipelineSummary"];
 export type WorkflowSummary = S["ApiWorkflowSummary"];
 
@@ -82,6 +86,8 @@ export type Escalation = S["ApiEscalation"];
 export type PrefProposal = S["ApiPrefProposal"];
 export type ProposalStats = S["ApiProposalStats"];
 export type Role = S["ApiRole"];
+export type ApprovalPolicy = S["ApiApprovalPolicy"];
+export type AddApprovalPolicyBody = S["AddApprovalPolicyRequest"];
 
 // Extensibility
 export type PluginSummary = S["ApiPluginSummary"];

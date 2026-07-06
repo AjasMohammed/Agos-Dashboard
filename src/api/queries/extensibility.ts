@@ -9,6 +9,8 @@ import type {
   EventSubscription,
   CreateSubscriptionRequest,
   EmitEventRequest,
+  SkillSummary,
+  SkillDetail,
 } from "../models";
 
 // ── Plugins ─────────────────────────────────────────────────────────────────
@@ -171,5 +173,27 @@ export function useEmitEvent() {
   return useMutation({
     mutationFn: async (body: EmitEventRequest) =>
       unwrap(await client.POST("/api/v1/events/emit", { body })),
+  });
+}
+
+// ── Skills (read-only library) ────────────────────────────────────────────────
+export const skillKeys = {
+  all: ["skills"] as const,
+  detail: (name: string) => ["skills", name] as const,
+};
+export function useSkills() {
+  return useQuery({
+    queryKey: skillKeys.all,
+    queryFn: async () => unwrap<SkillSummary[]>(await client.GET("/api/v1/skills")),
+  });
+}
+export function useSkill(name: string, enabled: boolean) {
+  return useQuery({
+    queryKey: skillKeys.detail(name),
+    queryFn: async () =>
+      unwrap<SkillDetail>(
+        await client.GET("/api/v1/skills/{name}", { params: { path: { name } } }),
+      ),
+    enabled: enabled && Boolean(name),
   });
 }
