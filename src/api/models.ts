@@ -65,6 +65,7 @@ export type ToolSummary = S["ApiToolSummary"];
 export type DashboardSummary = S["DashboardSummary"];
 export type TaskCounts = S["TaskCounts"];
 export type AuditEntrySummary = S["AuditEntrySummary"];
+export type AuditEntryDetail = S["AuditEntryDetail"];
 
 // Conversational
 export type ChatSessionSummary = S["ApiChatSessionSummary"];
@@ -79,7 +80,6 @@ export type SkillSummary = S["ApiSkillSummary"];
 export type SkillDetail = S["ApiSkillDetail"];
 export type InboxMessage = S["ApiInboxMessage"];
 export type PipelineSummary = S["ApiPipelineSummary"];
-export type WorkflowSummary = S["ApiWorkflowSummary"];
 
 // Governance
 export type Escalation = S["ApiEscalation"];
@@ -113,3 +113,16 @@ export type ConfigTree = S["ConfigTree"];
 export type DoctorReport = S["DoctorReport"];
 export type LogLine = S["LogLine"];
 export type ResourceInfo = S["ResourceInfo"];
+
+// Full-coverage additions (phase 08)
+export type ConvoSummary = S["ApiConvoSummary"];
+export type ConvoDetail = S["ApiConvoDetail"];
+export type ConvoTurn = S["ApiConvoTurn"];
+export type NotificationSummary = S["NotificationSummary"];
+export type ApiKeyMeta = S["ApiKeyMeta"];
+export type IssuedKey = S["IssuedKeyResponse"];
+export type CreateKeyRequest = S["CreateKeyRequest"];
+export type PluginDetail = S["ApiPluginDetail"];
+export type ConnectorDetail = S["ApiConnectorDetail"];
+export type HalInfo = S["HalInfo"];
+export type SystemStatus = S["SystemStatus"];

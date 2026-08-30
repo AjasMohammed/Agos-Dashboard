@@ -1186,7 +1186,8 @@ export interface paths {
         get: operations["notifications_list"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** `DELETE /api/v1/notifications` — Clear every notification (live questions survive). */
+        delete: operations["notifications_clear_all"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1204,6 +1205,23 @@ export interface paths {
         post?: never;
         /** `DELETE /api/v1/notifications/read` — Clear all read notifications. */
         delete: operations["notifications_clear_read"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/read-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/notifications/read-all` — Mark every notification as read. */
+        post: operations["notifications_mark_all_read"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1982,6 +2000,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/webhooks/incoming/{endpoint_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/webhooks/incoming/{endpoint_id}` — Provider webhook ingress.
+         * @description Unauthenticated (external services cannot carry a bearer token); the
+         *     per-endpoint secret and provider signature are the credential. Returns as
+         *     soon as the event is enqueued for debounced delivery to the owning agent.
+         */
+        post: operations["webhooks_incoming"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks/telegram/{channel_id}": {
         parameters: {
             query?: never;
@@ -2120,9 +2160,23 @@ export interface components {
         };
         ApiAgentDetail: {
             cost_snapshot?: Record<string, never> | null;
+            /**
+             * @description Current profile description (empty when unset). Exposed so an editor can
+             *     prefill instead of submitting blanks over the stored values.
+             */
+            description?: string;
             permissions: string[];
+            /**
+             * @description Result of a live health check against the agent's LLM provider
+             *     (`None` when no adapter is attached or the check timed out).
+             */
+            provider_healthy?: boolean | null;
             recent_tasks: components["schemas"]["ApiTaskSummary"][];
             summary: components["schemas"]["ApiAgentSummary"];
+            /** @description Current custom system prompt, when one is set. */
+            system_prompt?: string | null;
+            /** @description Current default thinking level, lowercase (`off`/`low`/`medium`/`high`/`max`). */
+            thinking_level?: string;
         };
         /** @description Cryptographic identity of an agent (read-only). */
         ApiAgentIdentity: {
@@ -2176,6 +2230,8 @@ export interface components {
         };
         /** @description Summary of a connected bidirectional channel instance. */
         ApiChannelSummary: {
+            /** @description Default agent for inbound chat on this channel. */
+            active_agent_name?: string | null;
             /**
              * Format: date-time
              * @description When the channel was connected.
@@ -2307,15 +2363,26 @@ export interface components {
             id: string;
             /** @description Human-readable name. */
             name: string;
+            /** @description An OAuth provider block exists in `oauth_providers.toml`, so "Connect" works. */
+            oauth_available: boolean;
             /** @description OAuth provider name (from the stored credential), if connected. */
             provider?: string | null;
+            /** @description A connector manifest is registered (tools are callable once connected). */
+            registered: boolean;
             /** @description Granted scopes (from the stored credential). */
             scopes: string[];
         };
         /** @description Detailed conversation view: header fields plus the ordered turn list. */
         ApiConvoDetail: {
+            /** @description RFC3339 creation timestamp. */
+            created_at: string;
             /** @description Conversation id (UUID). */
             id: string;
+            /**
+             * Format: int32
+             * @description Turn ceiling the orchestration loop runs to (clamped 2..=50 at creation).
+             */
+            max_turns: number;
             /** @description The conversation's turns, ordered by `turn_number`. */
             messages: components["schemas"]["ApiConvoTurn"][];
             /** @description Ordered participant agent names. */
@@ -2324,6 +2391,8 @@ export interface components {
             status: string;
             /** @description Conversation topic / seed prompt. */
             topic: string;
+            /** @description RFC3339 last-updated timestamp. */
+            updated_at: string;
         };
         /**
          * @description Summary row for a multi-agent conversation (list view).
@@ -2566,6 +2635,7 @@ export interface components {
             status: string;
             tools: string[];
             trust_tier: string;
+            user_installed: boolean;
             version: string;
         };
         /** @description Summary row for a discovered/active plugin. */
@@ -2586,6 +2656,8 @@ export interface components {
             tools: string[];
             /** @description Trust tier: `core` | `verified` | `community` | `blocked`. */
             trust_tier: string;
+            /** @description Manifest lives under `plugins/user/` (installed by an operator; removable). */
+            user_installed: boolean;
             /** @description Semver version string. */
             version: string;
         };
@@ -2722,8 +2794,12 @@ export interface components {
             completed_at?: string | null;
             /** Format: date-time */
             created_at: string;
+            /** @description Failure reason when `status == "failed"`. */
+            error?: string | null;
             id: string;
             prompt: string;
+            /** @description The agent's final answer when `status == "complete"`. */
+            result?: string | null;
             status: string;
             /**
              * @description Event type that triggered this task, if it was created by an event
@@ -2737,6 +2813,8 @@ export interface components {
             completed_at?: string | null;
             /** Format: date-time */
             created_at: string;
+            /** @description Failure reason when `status == "failed"`. */
+            error?: string | null;
             id: string;
             prompt_preview: string;
             status: string;
@@ -2746,6 +2824,13 @@ export interface components {
             description: string;
             id: string;
             name: string;
+            /** @description Permissions the tool requires (from `[capabilities_required]`). */
+            permissions?: string[];
+            /**
+             * @description Approval risk class (`readonly_scoped`, `readonly_external`,
+             *     `write_scoped`, `exec_capable`, `control_plane`, `interactive`).
+             */
+            risk_class?: string | null;
             status: string;
             trust_tier: string;
             version: string;
@@ -2898,14 +2983,14 @@ export interface components {
         /**
          * @description Request body for `POST /api/v1/chat/sessions`.
          *
-         *     `first_message` is optional in the API contract, but the backing store only
-         *     exposes `create_session_with_first_message`. When omitted, the session is
-         *     created with an empty placeholder first message (see handler/kernel impl).
+         *     `first_message` is optional: omit it (or send blank) to open an empty
+         *     session, which is what a client that creates the session on the first send
+         *     wants — the send/stream endpoints persist the user turn themselves.
          */
         CreateChatSessionRequest: {
             /** @description Agent to bind the new session to. */
             agent_name: string;
-            /** @description Optional first user message. If omitted, an empty placeholder is stored. */
+            /** @description Optional first user message. Missing or blank means an empty session. */
             first_message?: string | null;
             /**
              * @description Optional initial title (currently informational — the store sets title to
@@ -3047,9 +3132,23 @@ export interface components {
         Envelope_ApiAgentDetail: {
             data: {
                 cost_snapshot?: Record<string, never> | null;
+                /**
+                 * @description Current profile description (empty when unset). Exposed so an editor can
+                 *     prefill instead of submitting blanks over the stored values.
+                 */
+                description?: string;
                 permissions: string[];
+                /**
+                 * @description Result of a live health check against the agent's LLM provider
+                 *     (`None` when no adapter is attached or the check timed out).
+                 */
+                provider_healthy?: boolean | null;
                 recent_tasks: components["schemas"]["ApiTaskSummary"][];
                 summary: components["schemas"]["ApiAgentSummary"];
+                /** @description Current custom system prompt, when one is set. */
+                system_prompt?: string | null;
+                /** @description Current default thinking level, lowercase (`off`/`low`/`medium`/`high`/`max`). */
+                thinking_level?: string;
             };
         };
         /**
@@ -3135,6 +3234,8 @@ export interface components {
         Envelope_ApiChannelSummary: {
             /** @description Summary of a connected bidirectional channel instance. */
             data: {
+                /** @description Default agent for inbound chat on this channel. */
+                active_agent_name?: string | null;
                 /**
                  * Format: date-time
                  * @description When the channel was connected.
@@ -3255,8 +3356,15 @@ export interface components {
         Envelope_ApiConvoDetail: {
             /** @description Detailed conversation view: header fields plus the ordered turn list. */
             data: {
+                /** @description RFC3339 creation timestamp. */
+                created_at: string;
                 /** @description Conversation id (UUID). */
                 id: string;
+                /**
+                 * Format: int32
+                 * @description Turn ceiling the orchestration loop runs to (clamped 2..=50 at creation).
+                 */
+                max_turns: number;
                 /** @description The conversation's turns, ordered by `turn_number`. */
                 messages: components["schemas"]["ApiConvoTurn"][];
                 /** @description Ordered participant agent names. */
@@ -3265,6 +3373,8 @@ export interface components {
                 status: string;
                 /** @description Conversation topic / seed prompt. */
                 topic: string;
+                /** @description RFC3339 last-updated timestamp. */
+                updated_at: string;
             };
         };
         /**
@@ -3402,6 +3512,7 @@ export interface components {
                 status: string;
                 tools: string[];
                 trust_tier: string;
+                user_installed: boolean;
                 version: string;
             };
         };
@@ -3545,8 +3656,12 @@ export interface components {
                 completed_at?: string | null;
                 /** Format: date-time */
                 created_at: string;
+                /** @description Failure reason when `status == "failed"`. */
+                error?: string | null;
                 id: string;
                 prompt: string;
+                /** @description The agent's final answer when `status == "complete"`. */
+                result?: string | null;
                 status: string;
                 /**
                  * @description Event type that triggered this task, if it was created by an event
@@ -3567,6 +3682,13 @@ export interface components {
                 description: string;
                 id: string;
                 name: string;
+                /** @description Permissions the tool requires (from `[capabilities_required]`). */
+                permissions?: string[];
+                /**
+                 * @description Approval risk class (`readonly_scoped`, `readonly_external`,
+                 *     `write_scoped`, `exec_capable`, `control_plane`, `interactive`).
+                 */
+                risk_class?: string | null;
                 status: string;
                 trust_tier: string;
                 version: string;
@@ -3937,6 +4059,8 @@ export interface components {
          */
         Envelope_Vec_ApiChannelSummary: {
             data: {
+                /** @description Default agent for inbound chat on this channel. */
+                active_agent_name?: string | null;
                 /**
                  * Format: date-time
                  * @description When the channel was connected.
@@ -4001,8 +4125,12 @@ export interface components {
                 id: string;
                 /** @description Human-readable name. */
                 name: string;
+                /** @description An OAuth provider block exists in `oauth_providers.toml`, so "Connect" works. */
+                oauth_available: boolean;
                 /** @description OAuth provider name (from the stored credential), if connected. */
                 provider?: string | null;
+                /** @description A connector manifest is registered (tools are callable once connected). */
+                registered: boolean;
                 /** @description Granted scopes (from the stored credential). */
                 scopes: string[];
             }[];
@@ -4222,6 +4350,8 @@ export interface components {
                 tools: string[];
                 /** @description Trust tier: `core` | `verified` | `community` | `blocked`. */
                 trust_tier: string;
+                /** @description Manifest lives under `plugins/user/` (installed by an operator; removable). */
+                user_installed: boolean;
                 /** @description Semver version string. */
                 version: string;
             }[];
@@ -4343,6 +4473,13 @@ export interface components {
                 description: string;
                 id: string;
                 name: string;
+                /** @description Permissions the tool requires (from `[capabilities_required]`). */
+                permissions?: string[];
+                /**
+                 * @description Approval risk class (`readonly_scoped`, `readonly_external`,
+                 *     `write_scoped`, `exec_capable`, `control_plane`, `interactive`).
+                 */
+                risk_class?: string | null;
                 status: string;
                 trust_tier: string;
                 version: string;
@@ -4482,9 +4619,16 @@ export interface components {
                 /** @description Source label (e.g. "Kernel", agent name). */
                 from?: string;
                 id: string;
+                /** @description True for an unanswered `Question` — the agent is blocked on a reply. */
+                needs_response?: boolean;
                 priority: string;
                 read: boolean;
                 subject: string;
+                /**
+                 * @description Task that raised this message (e.g. the per-turn chat task for a
+                 *     blocking `ask-user`), if any.
+                 */
+                task_id?: string | null;
                 timestamp: string;
             }[];
         };
@@ -4730,6 +4874,8 @@ export interface components {
                 completed_at?: string | null;
                 /** Format: date-time */
                 created_at: string;
+                /** @description Failure reason when `status == "failed"`. */
+                error?: string | null;
                 id: string;
                 prompt_preview: string;
                 status: string;
@@ -4776,9 +4922,16 @@ export interface components {
             /** @description Source label (e.g. "Kernel", agent name). */
             from?: string;
             id: string;
+            /** @description True for an unanswered `Question` — the agent is blocked on a reply. */
+            needs_response?: boolean;
             priority: string;
             read: boolean;
             subject: string;
+            /**
+             * @description Task that raised this message (e.g. the per-turn chat task for a
+             *     blocking `ask-user`), if any.
+             */
+            task_id?: string | null;
             timestamp: string;
         };
         OpenAIChatRequest: {
@@ -4922,6 +5075,13 @@ export interface components {
         SavePipelineRequest: {
             definition: unknown;
             name: string;
+            /**
+             * @description Replace an existing pipeline of the same name. Without it a name that is
+             *     already taken is rejected with `409 Conflict` — the store writes
+             *     `INSERT OR REPLACE`, so a "new" pipeline would otherwise silently
+             *     overwrite a production definition and report success.
+             */
+            overwrite?: boolean;
         };
         /** @description Request body for `POST /api/v1/workflows` and `PUT /api/v1/workflows/{id}`. */
         SaveWorkflowRequest: {
@@ -4981,11 +5141,19 @@ export interface components {
             offset?: number | null;
             status?: string | null;
         };
+        /**
+         * @description Partial update of an agent's mutable profile settings.
+         *
+         *     Every field is optional and **absent means "leave unchanged"** — a client that
+         *     only wants to edit the description must not have to resend the system prompt it
+         *     never displayed. To *clear* the system prompt, send it as an empty string.
+         */
         UpdateAgentSettingsRequest: {
             agent_name: string;
-            description: string;
+            description?: string | null;
+            /** @description `None` leaves the prompt untouched; `Some("")` clears it. */
             system_prompt?: string | null;
-            thinking_level: string;
+            thinking_level?: string | null;
         };
         /** @description One-shot secret response, returned only on create/rotate. */
         WebhookSecretResponse: {
@@ -5245,7 +5413,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Agent ID (UUID) */
+                /** @description Agent name or ID (UUID) */
                 id: string;
             };
             cookie?: never;
@@ -5291,7 +5459,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Agent ID (UUID) */
+                /** @description Agent name or ID (UUID) */
                 id: string;
                 /** @description Memory tier: episodic | semantic | procedural */
                 tier: string;
@@ -8141,6 +8309,35 @@ export interface operations {
             };
         };
     };
+    notifications_clear_all: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Notifications cleared; `deleted` = row count */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     notifications_clear_read: {
         parameters: {
             query?: never;
@@ -8151,6 +8348,35 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Read notifications cleared */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    notifications_mark_all_read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Notifications marked read; `updated` = row count */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8404,6 +8630,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
+            /** @description A pipeline with this name exists (resend with `overwrite`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
         };
     };
     pipelines_import: {
@@ -8439,6 +8674,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A pipeline with the imported name already exists */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10362,6 +10606,59 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    webhooks_incoming: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Webhook endpoint id (UUID) */
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Provider payload (any content type; non-JSON bodies are wrapped as `{"_raw": ...}`) */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description Event accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unknown or inactive endpoint */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Endpoint rate-limited */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

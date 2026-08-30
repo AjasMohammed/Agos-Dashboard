@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { AlertCircle, ChevronRight, ShieldX, Wrench } from "lucide-react";
 import type { IterationTrace, TaskTrace, ToolCallTrace } from "@/api/models";
 import { Badge } from "@/components/ui/badge";
@@ -5,14 +6,30 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { relativeTime, tokens, usd } from "@/lib/format";
 
-/** Pretty-print a JSON value; pass strings through unchanged. */
+/**
+ * A single tool call can carry a whole log file or file read; the DOM does not
+ * need all of it. The cap bounds the rendered text — but only the memo below
+ * bounds the *work*: `JSON.stringify` runs over the full payload before the
+ * slice, so a 50-call trace was re-stringifying 100 unbounded payloads on every
+ * 5s poll, open or not (`<details>` hides its children with CSS; React keeps
+ * rendering them).
+ */
+const MAX_PAYLOAD_CHARS = 100_000;
+
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, shared with the detail page
+export function truncateText(text: string, limit = MAX_PAYLOAD_CHARS): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n… truncated (${text.length.toLocaleString()} characters total)`;
+}
+
+/** Pretty-print a JSON value; pass strings through unchanged. Always capped. */
 function asText(v: unknown): string {
   if (v == null) return "";
-  if (typeof v === "string") return v;
+  if (typeof v === "string") return truncateText(v);
   try {
-    return JSON.stringify(v, null, 2);
+    return truncateText(JSON.stringify(v, null, 2) ?? String(v));
   } catch {
-    return String(v);
+    return truncateText(String(v));
   }
 }
 
@@ -33,10 +50,14 @@ function Payload({
   tone?: "default" | "danger";
   defaultOpen?: boolean;
 }) {
-  const text = asText(value);
-  if (!text) return null;
+  const [open, setOpen] = useState(defaultOpen);
+  // Cheap enough to decide "is there anything here" without stringifying:
+  // `asText` returns "" for exactly these two.
+  const empty = value == null || value === "";
+  const text = useMemo(() => (open ? asText(value) : ""), [open, value]);
+  if (empty) return null;
   return (
-    <details open={defaultOpen} className="group">
+    <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)} className="group">
       <summary className="flex cursor-pointer select-none items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground">
         <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
         {label}

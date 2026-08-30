@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client, unwrap } from "../client";
+import { taskKeys } from "./tasks";
 import type {
   PluginSummary,
   ChannelSummary,
@@ -11,10 +12,17 @@ import type {
   EmitEventRequest,
   SkillSummary,
   SkillDetail,
+  ConnectorDetail,
+  PluginDetail,
 } from "../models";
 
 // ── Plugins ─────────────────────────────────────────────────────────────────
-export const pluginKeys = { all: ["plugins"] as const };
+// `detail` deliberately nests under `all`: enable/disable invalidates the list,
+// and an open detail dialog shows the status that just changed.
+export const pluginKeys = {
+  all: ["plugins"] as const,
+  detail: (id: string | null) => ["plugins", id] as const,
+};
 export function usePlugins() {
   return useQuery({
     queryKey: pluginKeys.all,
@@ -71,7 +79,12 @@ export function useDetachMcp() {
 }
 
 // ── Connectors ──────────────────────────────────────────────────────────────
-export const connectorKeys = { all: ["connectors"] as const };
+// Nests under `all` for the same reason as `pluginKeys.detail` — a connector
+// mutation must refresh the detail dialog it was launched from.
+export const connectorKeys = {
+  all: ["connectors"] as const,
+  detail: (id: string | null) => ["connectors", id] as const,
+};
 export function useConnectors() {
   return useQuery({
     queryKey: connectorKeys.all,
@@ -170,9 +183,13 @@ export function useToggleSubscription(action: "enable" | "disable") {
   });
 }
 export function useEmitEvent() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: async (body: EmitEventRequest) =>
       unwrap(await client.POST("/api/v1/events/emit", { body })),
+    // A matched subscription spawns tasks; the emit form is the only surface
+    // that would otherwise show no sign the event did anything.
+    onSuccess: () => qc.invalidateQueries({ queryKey: taskKeys.all }),
   });
 }
 
@@ -195,5 +212,69 @@ export function useSkill(name: string, enabled: boolean) {
         await client.GET("/api/v1/skills/{name}", { params: { path: { name } } }),
       ),
     enabled: enabled && Boolean(name),
+  });
+}
+
+// ── Detail lookups + marketplace review + plugin discover (phase 08) ────────
+export function useConnectorDetail(id: string | null) {
+  return useQuery({
+    queryKey: connectorKeys.detail(id),
+    queryFn: async () =>
+      unwrap<ConnectorDetail>(
+        await client.GET("/api/v1/connectors/{id}", { params: { path: { id: id! } } }),
+      ),
+    enabled: id != null,
+  });
+}
+
+export function usePluginDetail(id: string | null) {
+  return useQuery({
+    queryKey: pluginKeys.detail(id),
+    queryFn: async () =>
+      unwrap<PluginDetail>(
+        await client.GET("/api/v1/plugins/{id}", { params: { path: { id: id! } } }),
+      ),
+    enabled: id != null,
+  });
+}
+
+export function useDiscoverPlugins() {
+  const qc = useQueryClient();
+  return useMutation({
+    // Rescans the plugin directories for new manifests.
+    mutationFn: async () => unwrap<unknown>(await client.POST("/api/v1/plugins/discover")),
+    onSuccess: () => qc.invalidateQueries({ queryKey: pluginKeys.all }),
+  });
+}
+
+// The literal "detail" segment keeps these lookups out of the marketplace
+// *search* key's namespace (`["marketplace", query]`, built at its call site):
+// a review invalidating one entry must not cancel the search that is loading.
+export const marketplaceKeys = {
+  detail: (name: string | null) => ["marketplace", "detail", name] as const,
+};
+
+export function useMarketplaceDetail(name: string | null) {
+  return useQuery({
+    queryKey: marketplaceKeys.detail(name),
+    queryFn: async () =>
+      unwrap<unknown>(
+        await client.GET("/api/v1/marketplace/{name}", { params: { path: { name: name! } } }),
+      ) as Record<string, unknown>,
+    enabled: name != null,
+  });
+}
+
+export function useSubmitReview() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { name: string; rating: number; comment: string; author_key: string }) =>
+      unwrap(
+        await client.POST("/api/v1/marketplace/{name}/reviews", {
+          params: { path: { name: vars.name } },
+          body: { rating: vars.rating, comment: vars.comment, author_key: vars.author_key },
+        }),
+      ),
+    onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: marketplaceKeys.detail(vars.name) }),
   });
 }

@@ -21,6 +21,7 @@ export const taskKeys = {
   list: (filter: TaskFilter) => ["tasks", "list", filter] as const,
   detail: (id: string) => ["tasks", id] as const,
   trace: (id: string) => ["tasks", id, "trace"] as const,
+  checkpoints: (id: string) => ["tasks", id, "checkpoints"] as const,
 };
 
 export function useTasks(filter: TaskFilter) {
@@ -73,11 +74,15 @@ export function useTaskTrace(id: string, enabled: boolean) {
         throw err;
       }
     },
-    // Live progress: while the task is unfinished (or has no trace yet), poll;
-    // stop once finished_at is set — the persisted trace no longer changes.
+    // Live progress: poll only a real, unfinished trace. `null` means the task
+    // has no trace at all (the queryFn maps 404 → null) and an error won't fix
+    // itself on a timer — treating either as "not finished yet" is what made
+    // this re-request a 404 every 5s for the life of the tab.
     refetchInterval: (query) => {
+      if (query.state.status === "error") return false;
       const trace = query.state.data;
-      return !trace || trace.finished_at == null ? 5000 : false;
+      if (!trace) return false;
+      return trace.finished_at == null ? 5000 : false;
     },
     enabled: enabled && Boolean(id),
   });
@@ -85,7 +90,7 @@ export function useTaskTrace(id: string, enabled: boolean) {
 
 export function useTaskCheckpoints(id: string, enabled: boolean) {
   return useQuery({
-    queryKey: ["tasks", id, "checkpoints"],
+    queryKey: taskKeys.checkpoints(id),
     queryFn: async () =>
       unwrap<CheckpointSummary[]>(
         await client.GET("/api/v1/tasks/{id}/checkpoints", { params: { path: { id } } }),
@@ -97,8 +102,12 @@ export function useTaskCheckpoints(id: string, enabled: boolean) {
 export function useRunTask() {
   const qc = useQueryClient();
   return useMutation({
+    // The contract types the response as an untyped `Value`; the handler
+    // returns `{ task_id }` (agos handlers/tasks.rs). Read it defensively.
     mutationFn: async (body: RunTaskRequest) =>
-      unwrap<unknown>(await client.POST("/api/v1/tasks/run", { body })),
+      unwrap<unknown>(await client.POST("/api/v1/tasks/run", { body })) as
+        | { task_id?: string }
+        | null,
     onSuccess: () => qc.invalidateQueries({ queryKey: taskKeys.all }),
   });
 }

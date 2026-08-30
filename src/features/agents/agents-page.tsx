@@ -1,4 +1,4 @@
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { Bot } from "lucide-react";
 import { useAgents, agentKeys } from "@/api/queries/agents";
 import { useInvalidateOnEvent } from "@/realtime/cacheBridge";
@@ -8,6 +8,7 @@ import { DataTable, type Column } from "@/components/data-table";
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { relativeTime } from "@/lib/format";
 import { ConnectAgentDialog } from "./connect-agent-dialog";
 import type { AgentSummary } from "@/api/models";
@@ -71,13 +72,15 @@ const columns: Column<AgentSummary>[] = [
 export function AgentsPage() {
   const query = useAgents();
   const navigate = useNavigate();
-  useInvalidateOnEvent("agents", [agentKeys.all]);
+  // `root`, not the list key: agent events must also refresh an open detail
+  // page (permissions, scratchpad, memory all hang off `agents/detail/…`).
+  useInvalidateOnEvent("agents", [agentKeys.root]);
 
   return (
     <div>
       <PageHeader
         title="Agents"
-        description="LLM agents registered with the kernel."
+        description="Your assistants and the models behind them."
         actions={<ConnectAgentDialog />}
       />
       <QueryState
@@ -86,9 +89,13 @@ export function AgentsPage() {
         empty={
           <EmptyState
             icon={Bot}
-            title="No agents connected"
-            description="Connect an agent to start running tasks."
-            action={<ConnectAgentDialog />}
+            title="No assistants yet"
+            description="Add one to start chatting and running tasks."
+            action={
+              <Button asChild>
+                <Link to="/welcome">Set up an assistant</Link>
+              </Button>
+            }
           />
         }
       >

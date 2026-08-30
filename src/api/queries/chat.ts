@@ -4,14 +4,21 @@ import type { ChatSessionSummary, ChatMessage } from "../models";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
+/**
+ * These two must not prefix one another. `invalidateQueries` matches by prefix
+ * and defaults to `cancelRefetch: true`, so while `sessions` was
+ * `["chat","sessions"]` — a strict prefix of `messages(id)` — refreshing the
+ * session list at the end of a turn cancelled the awaited transcript refetch
+ * and the streamed reply blinked out.
+ */
 export const chatKeys = {
-  sessions: ["chat", "sessions"] as const,
-  messages: (id: string) => ["chat", "sessions", id, "messages"] as const,
+  sessions: ["chat", "session-list"] as const,
+  messages: (id: string) => ["chat", "session", id, "messages"] as const,
 };
 
 export interface StreamHandlers {
   onChunk: (text: string) => void;
-  onToolStart?: (name: string) => void;
+  onToolStart?: (name: string, taskId?: string) => void;
   onTool?: (name: string, success: boolean) => void;
   /**
    * Fired on every byte read from the stream — including events with no
@@ -85,7 +92,13 @@ export async function streamChatMessage(
         // variant fields sit flat next to `type`: {"type":"TextChunk","text":"…"},
         // {"type":"Error","message":"…"}. The SSE event name already identifies the
         // variant, so `type` itself is unused here.
-        let parsed: { text?: string; message?: string; tool_name?: string; success?: boolean };
+        let parsed: {
+          text?: string;
+          message?: string;
+          tool_name?: string;
+          success?: boolean;
+          task_id?: string;
+        };
         try {
           parsed = JSON.parse(data.join("\n"));
         } catch {
@@ -94,7 +107,7 @@ export async function streamChatMessage(
         if (event === "chunk") {
           if (parsed.text) h.onChunk(parsed.text);
         } else if (event === "tool_start") {
-          h.onToolStart?.(parsed.tool_name ?? "tool");
+          h.onToolStart?.(parsed.tool_name ?? "tool", parsed.task_id);
         } else if (event === "tool_result") {
           h.onTool?.(parsed.tool_name ?? "tool", Boolean(parsed.success));
         } else if (event === "done") {
@@ -137,6 +150,9 @@ export function useChatSessions() {
     queryKey: chatKeys.sessions,
     queryFn: async () =>
       unwrapList<ChatSessionSummary>(await client.GET("/api/v1/chat/sessions")),
+    // Sidebar counts/previews: cheap list, no WS channel — keep it honest.
+    refetchOnWindowFocus: true,
+    refetchInterval: 30_000,
   });
 }
 
@@ -148,6 +164,11 @@ export function useChatMessages(id: string) {
         await client.GET("/api/v1/chat/sessions/{id}/messages", { params: { path: { id } } }),
       ),
     enabled: Boolean(id),
+    // No chat channel on the WS yet, so a turn written from another tab or a
+    // channel bridge only shows up on reload. Refetch when the tab regains
+    // focus (the global default is off) — the streaming path owns its own
+    // invalidation and never runs while the tab is unfocused mid-send.
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -157,20 +178,6 @@ export function useCreateChatSession() {
     mutationFn: async (body: { agent_name: string; title?: string; first_message?: string }) =>
       unwrap<{ id: string }>(await client.POST("/api/v1/chat/sessions", { body })),
     onSuccess: () => qc.invalidateQueries({ queryKey: chatKeys.sessions }),
-  });
-}
-
-export function useSendChatMessage(id: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (text: string) =>
-      unwrap<ChatMessage>(
-        await client.POST("/api/v1/chat/sessions/{id}/messages", {
-          params: { path: { id } },
-          body: { text },
-        }),
-      ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: chatKeys.messages(id) }),
   });
 }
 

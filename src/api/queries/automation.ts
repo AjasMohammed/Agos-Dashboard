@@ -1,9 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client, unwrap } from "../client";
-import type { ScheduleRun, ScheduleSummary, PipelineSummary, WorkflowSummary } from "../models";
+import { taskKeys } from "./tasks";
+import type { ScheduleRun, ScheduleSummary, PipelineSummary } from "../models";
 
 // ── Schedules ───────────────────────────────────────────────────────────────
-export const scheduleKeys = { all: ["schedules"] as const };
+// `runs` sits in its own namespace rather than under `all`: every pause/resume/
+// delete invalidates `all`, and while run history nested beneath it those
+// mutations also cancelled the open run-history dialog's fetch.
+export const scheduleKeys = {
+  all: ["schedules"] as const,
+  runs: (id: string) => ["schedule-runs", id] as const,
+};
 export function useSchedules() {
   return useQuery({
     queryKey: scheduleKeys.all,
@@ -27,7 +34,7 @@ export function useCreateSchedule() {
 /** Run history for one schedule — fetched only while its dialog is open. */
 export function useScheduleRuns(id: string | null) {
   return useQuery({
-    queryKey: ["schedules", id, "runs"],
+    queryKey: scheduleKeys.runs(id ?? ""),
     queryFn: async () =>
       unwrap<ScheduleRun[]>(
         await client.GET("/api/v1/schedules/{id}/runs", { params: { path: { id: id! } } }),
@@ -68,7 +75,12 @@ export function useDeleteSchedule() {
 }
 
 // ── Pipelines ───────────────────────────────────────────────────────────────
-export const pipelineKeys = { all: ["pipelines"] as const };
+// `runEvents` is namespaced away from `all` for the same reason as schedule
+// runs: a delete/import must not cancel an open run dialog's poll.
+export const pipelineKeys = {
+  all: ["pipelines"] as const,
+  runEvents: (runId: string) => ["pipeline-runs", runId] as const,
+};
 export function usePipelines() {
   return useQuery({
     queryKey: pipelineKeys.all,
@@ -76,6 +88,7 @@ export function usePipelines() {
   });
 }
 export function useRunPipeline() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { name: string; input: string; agent_name?: string }) =>
       unwrap(
@@ -84,6 +97,9 @@ export function useRunPipeline() {
           body: { name: vars.name, input: vars.input, agent_name: vars.agent_name, detach: true },
         }),
       ),
+    // A detached run materialises as kernel tasks; without this the activity
+    // list shows nothing until its next poll.
+    onSuccess: () => qc.invalidateQueries({ queryKey: taskKeys.all }),
   });
 }
 export function useDeletePipeline() {
@@ -114,12 +130,20 @@ export async function fetchPipelineDefinition(name: string) {
   return def as Record<string, unknown>;
 }
 
-/** Save (create or update) a pipeline from a JSON definition (JSON is valid YAML). */
+/**
+ * Save (create or update) a pipeline from a JSON definition (JSON is valid
+ * YAML). Without `overwrite` the API answers **409 Conflict** when the name is
+ * already taken — the store writes `INSERT OR REPLACE`, so an unguarded save
+ * would silently clobber a production definition and report success.
+ */
 export function useSavePipeline() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (vars: { name: string; definition: Record<string, unknown> }) =>
-      unwrap(await client.POST("/api/v1/pipelines", { body: vars })),
+    mutationFn: async (vars: {
+      name: string;
+      definition: Record<string, unknown>;
+      overwrite?: boolean;
+    }) => unwrap(await client.POST("/api/v1/pipelines", { body: vars })),
     onSuccess: () => qc.invalidateQueries({ queryKey: pipelineKeys.all }),
   });
 }
@@ -137,51 +161,35 @@ export async function exportPipeline(name: string) {
   URL.revokeObjectURL(url);
 }
 
-// ── Workflows ───────────────────────────────────────────────────────────────
-export const workflowKeys = { all: ["workflows"] as const };
-export function useWorkflows() {
-  return useQuery({
-    queryKey: workflowKeys.all,
-    queryFn: async () => unwrap<WorkflowSummary[]>(await client.GET("/api/v1/workflows")),
-  });
-}
+/** Run states the kernel never moves out of — the spellings it emits, lowercased. */
+const TERMINAL_RUN_STATUS = new Set(["complete", "completed", "failed", "cancelled", "error"]);
 
 /**
- * Full stored workflow document (opaque JSON; includes the merged-in id), used
- * to seed the editor dialog.
+ * Snapshot of a detached pipeline run (steps, statuses, outputs). Polls while
+ * the dialog is open; the payload is an untyped kernel Value rendered as JSON.
  */
-export async function fetchWorkflowDefinition(id: string) {
-  // The contract types the stored document as an opaque value; it is always a
-  // JSON object on disk (the API rejects anything else on save).
-  const doc = unwrap<unknown>(await client.GET("/api/v1/workflows/{id}", { params: { path: { id } } }));
-  return doc as Record<string, unknown>;
-}
-
-/** Create (no id) or update (id) a workflow; the definition is opaque JSON. */
-export function useSaveWorkflow() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (vars: { id?: string; name: string; definition: Record<string, unknown> }) => {
-      const body = { name: vars.name, definition: vars.definition };
-      return vars.id
-        ? unwrap<{ id: string }>(
-            await client.PUT("/api/v1/workflows/{id}", {
-              params: { path: { id: vars.id } },
-              body,
-            }),
-          )
-        : unwrap<{ id: string }>(await client.POST("/api/v1/workflows", { body }));
+export function usePipelineRunEvents(runId: string | null) {
+  return useQuery({
+    queryKey: pipelineKeys.runEvents(runId ?? ""),
+    queryFn: async () =>
+      unwrap<unknown>(
+        await client.GET("/api/v1/pipelines/runs/{run_id}/events", {
+          params: { path: { run_id: runId! } },
+        }),
+      ) as Record<string, unknown>,
+    enabled: runId != null,
+    // A finished run's snapshot never changes again, so stop — otherwise this
+    // polls every 3s for as long as the tab lives. The payload is an untyped
+    // kernel Value, hence the defensive read of `status`.
+    refetchInterval: (query) => {
+      // An errored query has no `data`, so reading `status` off it falls through
+      // to the 3s branch and re-requests the 404 for as long as the dialog stays
+      // open. Same guard as `useTaskTrace`.
+      if (query.state.status === "error") return false;
+      const status = (query.state.data as { status?: unknown } | undefined)?.status;
+      return typeof status === "string" && TERMINAL_RUN_STATUS.has(status.toLowerCase())
+        ? false
+        : 3000;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: workflowKeys.all }),
-  });
-}
-
-export function useDeleteWorkflow() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: string) => {
-      unwrap(await client.DELETE("/api/v1/workflows/{id}", { params: { path: { id } } }));
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: workflowKeys.all }),
   });
 }

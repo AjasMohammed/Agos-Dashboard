@@ -8,6 +8,26 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EASE_OUT } from "@/components/motion";
 
+/**
+ * Post-login destination, validated. `?redirect=` is attacker-controllable, so
+ * only a local path is accepted: "//evil.com" and "/\evil.com" are
+ * protocol-relative URLs, and an absolute URL would send the operator off-site.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, unit-tested alongside the page it guards
+export function safeRedirect(to: string | undefined): string {
+  if (!to || !to.startsWith("/")) return "/";
+  // Browsers strip control characters before parsing, so "/\t/evil.com" is read
+  // as "//evil.com" and slips past the checks below. `pushState` then throws
+  // SecurityError rather than navigating off-origin, but that throw lands in the
+  // submit catch and tells someone who just signed in that login failed.
+  for (const ch of to) {
+    const code = ch.charCodeAt(0);
+    if (code <= 0x1f || code === 0x7f) return "/";
+  }
+  if (to.startsWith("//") || to.startsWith("/\\")) return "/";
+  return to;
+}
+
 export function LoginPage() {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as { redirect?: string };
@@ -21,10 +41,14 @@ export function LoginPage() {
     setError(null);
     try {
       await login(credential.trim());
-      navigate({ to: search.redirect || "/" });
+      navigate({ to: safeRedirect(search.redirect) });
     } catch (err) {
       if (err instanceof ApiError && err.status === 503) {
         setError("Login is disabled on this server (no operator token configured).");
+      } else if (err instanceof ApiError && err.status === 401) {
+        setError("That operator token wasn't accepted. Check [api] operator_token in ~/.agentos/config.toml.");
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError("Too many attempts — wait a minute.");
       } else if (err instanceof ApiError) {
         setError(err.message);
       } else {
@@ -54,13 +78,13 @@ export function LoginPage() {
               <span className="font-mono font-bold">A</span>
             </div>
             <CardTitle className="text-lg tracking-tight">AgentOS Control Panel</CardTitle>
-            <CardDescription>Sign in with your operator credential.</CardDescription>
+            <CardDescription>Sign in with your access key.</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={onSubmit} className="space-y-4">
               <div className="space-y-1.5">
                 <label htmlFor="credential" className="text-sm font-medium">
-                  Operator credential
+                  Access key
                 </label>
                 <input
                   id="credential"

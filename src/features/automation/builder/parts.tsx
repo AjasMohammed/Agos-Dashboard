@@ -1,6 +1,6 @@
 import { memo, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Bot, Flag, Play, Search, Wrench, type LucideIcon } from "lucide-react";
+import { Bot, Search, Wrench, type LucideIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { DND_TYPE, type BuilderNode, type StepData, type StepKind } from "./graph";
@@ -12,42 +12,41 @@ export interface PaletteItem {
 }
 
 const KIND_META: Record<StepKind, { icon: LucideIcon; className: string }> = {
-  start: { icon: Play, className: "bg-success/15 text-success" },
-  end: { icon: Flag, className: "bg-warning/15 text-warning" },
   agent: { icon: Bot, className: "bg-primary/15 text-primary" },
   tool: { icon: Wrench, className: "bg-secondary text-secondary-foreground" },
 };
 
-/** The single custom React Flow node used by both builders. */
+/**
+ * `kind` reaches here from a drag payload and from stored YAML, so it is not
+ * really typed. An unguarded `KIND_META[kind].icon` throws during render for
+ * anything unexpected, which the error boundary answers by unmounting the whole
+ * canvas — taking the unsaved graph with it. Fall back to the tool icon instead.
+ */
+function metaFor(kind: StepKind) {
+  return KIND_META[kind] ?? KIND_META.tool;
+}
+
+/** The single custom React Flow node used by the builder. */
 export const StepNode = memo(function StepNode({ data, selected }: NodeProps<BuilderNode>) {
-  const meta = KIND_META[data.kind];
-  const Icon = meta.icon;
-  const sub =
-    data.kind === "agent"
-      ? data.agent || "pick an agent"
-      : data.kind === "tool"
-        ? data.tool || "pick a tool"
-        : data.kind;
+  const Icon = metaFor(data.kind).icon;
+  const sub = data.kind === "agent" ? data.agent || "pick an agent" : data.tool || "pick a tool";
   return (
     <div
       className={cn(
         "min-w-44 max-w-56 rounded-lg border bg-card shadow-card transition-shadow",
         selected ? "border-primary shadow-glow" : "border-border",
-        data.disabled && "opacity-50",
       )}
     >
-      {data.kind !== "start" && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          className="!size-2.5 !border-2 !border-background !bg-muted-foreground"
-        />
-      )}
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!size-2.5 !border-2 !border-background !bg-muted-foreground"
+      />
       <div className="flex items-center gap-2.5 p-3">
         <span
           className={cn(
             "flex size-8 shrink-0 items-center justify-center rounded-md",
-            meta.className,
+            metaFor(data.kind).className,
           )}
         >
           <Icon className="size-4" />
@@ -57,13 +56,24 @@ export const StepNode = memo(function StepNode({ data, selected }: NodeProps<Bui
           <span className="block truncate font-mono text-[10px] text-muted-foreground">{sub}</span>
         </span>
       </div>
-      {data.kind !== "end" && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          className="!size-2.5 !border-2 !border-background !bg-primary"
-        />
+      {(data.tools ?? []).length > 0 && (
+        <div className="flex flex-wrap gap-1 border-t border-border px-3 py-2">
+          {(data.tools ?? []).map((t) => (
+            <span
+              key={t.id ?? t.tool}
+              className="flex max-w-full items-center gap-1 rounded border border-border bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground"
+            >
+              <Wrench className="size-2.5 shrink-0" />
+              <span className="truncate">{t.tool}</span>
+            </span>
+          ))}
+        </div>
       )}
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!size-2.5 !border-2 !border-background !bg-primary"
+      />
     </div>
   );
 });
@@ -114,7 +124,7 @@ export function Palette({
             </p>
             <ul className="space-y-1">
               {g.items.map((item) => {
-                const meta = KIND_META[item.data.kind];
+                const meta = metaFor(item.data.kind);
                 const Icon = meta.icon;
                 return (
                   <li key={`${item.data.kind}:${item.label}`}>

@@ -30,15 +30,22 @@ export function InstallToolDialog() {
     try {
       await install.mutateAsync(path.trim());
       toast.success("Tool installed");
-      setPath("");
-      setOpen(false);
+      setOpen(false); // onOpenChange clears the path
     } catch (err) {
       toastError(err);
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      // Reset on close, not only on success — a cancelled/failed path must not
+      // reappear pre-filled the next time the dialog is opened.
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setPath("");
+      }}
+    >
       <DialogTrigger asChild>
         <Button>Install tool</Button>
       </DialogTrigger>

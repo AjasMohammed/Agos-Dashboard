@@ -17,14 +17,18 @@ import { mentionAt, matchFiles } from "@/lib/mentions";
 import { cn } from "@/lib/utils";
 import type { FileMeta } from "@/api/models";
 
-interface MentionTextareaProps
-  extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange"> {
+interface MentionTextareaProps extends Omit<
+  TextareaHTMLAttributes<HTMLTextAreaElement>,
+  "value" | "onChange"
+> {
   value: string;
   onValueChange: (value: string) => void;
   /** Class for the relative wrapper (the textarea itself takes `className`). */
   containerClassName?: string;
   /** Where the suggestion list opens relative to the textarea. */
   menuPlacement?: "top" | "bottom";
+  /** Grow with the content instead of scrolling. Cap it with a `max-h-*` class. */
+  autoGrow?: boolean;
   /** Fires when the suggestion menu opens/closes. Inside a Radix Dialog, use
    *  this to `preventDefault()` the dialog's `onEscapeKeyDown` while open —
    *  Radix's document-capture Escape listener runs before ours. */
@@ -41,6 +45,7 @@ export function MentionTextarea({
   onValueChange,
   containerClassName,
   menuPlacement = "top",
+  autoGrow = false,
   onMenuOpenChange,
   onKeyDown,
   onSelect,
@@ -65,6 +70,15 @@ export function MentionTextarea({
   useEffect(() => {
     onMenuOpenChange?.(open);
   }, [open, onMenuOpenChange]);
+
+  // Reflow to fit the content on every value change (composer). Measured after
+  // paint from a zero height so the box shrinks again on delete, not just grows.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!autoGrow || !el) return;
+    el.style.height = "0px";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [autoGrow, value]);
 
   // Restore the caret after a programmatic insert (controlled value update).
   useLayoutEffect(() => {
@@ -148,11 +162,20 @@ export function MentionTextarea({
           onBlur?.(e);
           setMention(null);
         }}
-        role="combobox"
-        aria-autocomplete="list"
-        aria-expanded={open}
-        aria-controls={open ? listboxId : undefined}
-        aria-activedescendant={open ? `${listboxId}-opt-${active}` : undefined}
+        // Combobox ONLY while the menu is up. Applied unconditionally, the
+        // primary chat composer is announced as a collapsed combobox rather
+        // than the plain multiline text field it is 99% of the time — the
+        // mention menu is a transient affordance, not the control's identity.
+        // The listbox/option roles on the menu itself are unaffected.
+        {...(open
+          ? {
+              role: "combobox" as const,
+              "aria-autocomplete": "list" as const,
+              "aria-expanded": true,
+              "aria-controls": listboxId,
+              "aria-activedescendant": `${listboxId}-opt-${active}`,
+            }
+          : {})}
       />
       {open && (
         <div

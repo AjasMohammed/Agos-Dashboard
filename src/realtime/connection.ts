@@ -81,14 +81,26 @@ export function onReconnect(fn: () => void): () => void {
   return () => reconnectListeners.delete(fn);
 }
 
-/** Send a frame, queueing it (bounded) until the socket is open. */
+/**
+ * Send a frame, queueing it (bounded) until the socket is open.
+ *
+ * `subscribe` is the one frame type we DROP instead of queueing: `open()`
+ * awaits an HTTP ticket mint before the socket exists, so effects mounting in
+ * that window would land in the outbox — and `onopen` flushes the outbox and
+ * then runs `reconnectListeners` (→ `resubscribeAll`), sending every subscribe
+ * twice. The server mints a fresh `sub_id` per frame with no per-channel
+ * dedupe, and the client only remembers the last ack, so the first
+ * registration would stream events forever to a channel we can never
+ * unsubscribe. `resubscribeAll` is the single owner of subscribe frames.
+ */
 export function sendFrame(frame: ClientFrame): void {
   if (socket && socket.readyState === OPEN) {
     socket.send(JSON.stringify(frame));
-  } else {
-    if (outbox.length >= MAX_OUTBOX) outbox.shift();
-    outbox.push(frame);
+    return;
   }
+  if (frame.type === "subscribe") return;
+  if (outbox.length >= MAX_OUTBOX) outbox.shift();
+  outbox.push(frame);
 }
 
 function clearTimers() {

@@ -75,7 +75,7 @@ export function ConnectAgentDialog({ trigger }: { trigger?: ReactNode }) {
         thinking_level: form.thinking_level,
         system_prompt: form.system_prompt.trim() || undefined,
       });
-      toast.success(`Agent "${form.name}" connected`);
+      toast.success(`Assistant "${form.name}" is ready`);
       setForm(BLANK);
       setOpen(false);
     } catch (err) {
@@ -91,11 +91,11 @@ export function ConnectAgentDialog({ trigger }: { trigger?: ReactNode }) {
         if (!o) setForm(BLANK);
       }}
     >
-      <DialogTrigger asChild>{trigger ?? <Button>Connect agent</Button>}</DialogTrigger>
+      <DialogTrigger asChild>{trigger ?? <Button>Add assistant</Button>}</DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Connect agent</DialogTitle>
-          <DialogDescription>Register an LLM agent with the kernel.</DialogDescription>
+          <DialogTitle>Add assistant</DialogTitle>
+          <DialogDescription>Point AgentOS at a model and give it a name.</DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="grid gap-3">
           <Field label="Name">
@@ -165,7 +165,7 @@ export function ConnectAgentDialog({ trigger }: { trigger?: ReactNode }) {
               type="submit"
               disabled={connect.isPending || !form.name.trim() || !form.model.trim()}
             >
-              {connect.isPending ? "Connecting…" : "Connect"}
+              {connect.isPending ? "Adding…" : "Add"}
             </Button>
           </DialogFooter>
         </form>

@@ -9,6 +9,9 @@ import { test, expect, type Page } from "@playwright/test";
  * session (`scopes: ["*:rw"]`) so the whole scope-gated nav renders. (The Prism
  * mock returns placeholder `scopes: ["string"]`, which — correctly — grants
  * nothing, so only the un-scoped Dashboard link would show.)
+ *
+ * Chat is the home route; the operator sections live behind the sidebar's
+ * "More" fold, so a test that wants one opens it via `openMore()` first.
  */
 
 const FULL_ACCESS = {
@@ -43,7 +46,11 @@ const DASHBOARD = {
 
 async function stubAuth(page: Page) {
   await page.route("**/api/v1/auth/login", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: FULL_ACCESS }) }),
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: FULL_ACCESS }),
+    }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({
@@ -53,39 +60,92 @@ async function stubAuth(page: Page) {
     }),
   );
   await page.route("**/api/v1/dashboard", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: DASHBOARD }) }),
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: DASHBOARD }),
+    }),
+  );
+  // Chat is the landing route, so its queries fire on every login. The Prism
+  // mock 401s anything it does not consider authorized, and a single 401 clears
+  // the session (client.ts authMiddleware) — which would bounce us to /login
+  // before any assertion runs.
+  await page.route("**/api/v1/chat/sessions*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { total: 0 } }),
+    }),
+  );
+  // The shell mounts these on every authenticated route. They are NOT part of any
+  // assertion, but a single 401 clears the session (client.ts authMiddleware) and
+  // bounces to /login — so leaving them unstubbed makes the whole suite depend on
+  // which API the dev server points at (`.env.development.local` sends it to the
+  // real kernel, which 401s an e2e key).
+  await page.route("**/api/v1/ws/ticket", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { ticket: "e2e-ticket", expires_at: null } }),
+    }),
+  );
+  await page.route("**/api/v1/notifications/unread", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { count: 0 } }),
+    }),
+  );
+  await page.route("**/api/v1/agents*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: DASHBOARD.online_agents, meta: { total: 1 } }),
+    }),
   );
 }
 
 async function login(page: Page) {
   await stubAuth(page);
   await page.goto("/login");
-  await page.getByLabel(/operator credential/i).fill("test-operator-token");
+  await page.getByLabel(/access key/i).fill("test-operator-token");
   await page.getByRole("button", { name: /sign in/i }).click();
-  // Landed on the authenticated shell — the Dashboard page header renders.
-  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  // Landed on the authenticated shell — chat is home.
+  await expect(page.getByRole("heading", { name: "Chat" })).toBeVisible();
+}
+
+/** Operator sections sit under the collapsible "More" fold. */
+async function openMore(page: Page) {
+  const more = page.getByRole("button", { name: "More" });
+  if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
 }
 
 test("unauthenticated visit redirects to /login", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/login/);
   await expect(page.getByText(/AgentOS Control Panel/i).first()).toBeVisible();
-  await expect(page.getByLabel(/operator credential/i)).toBeVisible();
+  await expect(page.getByLabel(/access key/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /sign in/i })).toBeVisible();
 });
 
-test("login lands on the shell with grouped navigation", async ({ page }) => {
+test("login lands on chat with the primary nav, operator pages under More", async ({ page }) => {
   await login(page);
   await expect(page).toHaveURL(/\/$/);
-  // Sidebar groups + a few representative nav links (visible with full access).
-  await expect(page.getByText("Operate")).toBeVisible();
-  await expect(page.getByText("System")).toBeVisible();
+  // Primary strip is always visible; the kernel-ish sections are folded away.
+  await expect(page.getByRole("link", { name: "Chat" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Agents" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Activity" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Tasks" })).toHaveCount(0);
+
+  await openMore(page);
+  await expect(page.getByText("System", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Tasks" })).toBeVisible();
 });
 
 test("dashboard renders live stat cards (not a placeholder)", async ({ page }) => {
   await login(page);
+  await page.getByRole("link", { name: "Dashboard" }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
   // Scope to the main content — nav links share names with the stat cards.
   const main = page.getByRole("main");
   await expect(main.getByText("Uptime")).toBeVisible();
@@ -97,6 +157,7 @@ test("dashboard renders live stat cards (not a placeholder)", async ({ page }) =
 
 test("navigating to feature pages renders real pages", async ({ page }) => {
   await login(page);
+  await openMore(page);
   await page.getByRole("link", { name: "Tasks" }).click();
   await expect(page).toHaveURL(/\/tasks$/);
   await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible();
@@ -105,7 +166,7 @@ test("navigating to feature pages renders real pages", async ({ page }) => {
   await page.getByRole("link", { name: "Agents" }).click();
   await expect(page).toHaveURL(/\/agents$/);
   await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /connect agent/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /add assistant/i })).toBeVisible();
 });
 
 test("theme toggle flips the root color scheme", async ({ page }) => {
@@ -139,12 +200,14 @@ test("scope gating hides nav items the key cannot access", async ({ page }) => {
     }),
   );
   await page.goto("/login");
-  await page.getByLabel(/operator credential/i).fill("audit-key");
+  await page.getByLabel(/access key/i).fill("audit-key");
   await page.getByRole("button", { name: /sign in/i }).click();
+  // No chat:r → home falls back to the unscoped dashboard.
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await openMore(page);
   await expect(page.getByRole("link", { name: "Audit" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Agents" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Secrets" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "API keys & credentials" })).toHaveCount(0);
 });
 
 const FILES = {
@@ -184,9 +247,12 @@ test("files page shows the file ID and a copy-mention action", async ({ page }) 
   await stubFiles(page);
   await page.goto("/files");
   await expect(page.getByRole("heading", { name: "Files" })).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: "File ID" })).toBeVisible();
+  // One card per file, each opening the preview from its thumbnail.
+  await expect(page.getByTitle("Preview")).toHaveCount(2);
   // Truncated id rendered as a click-to-copy button carrying the full id in its title.
-  await expect(page.getByTitle(/f1f2f3f4-0000-0000-0000-000000000001 — click to copy/)).toBeVisible();
+  await expect(
+    page.getByTitle(/f1f2f3f4-0000-0000-0000-000000000001 — click to copy/),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: /mention/i })).toHaveCount(2);
 });
 

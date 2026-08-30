@@ -1,5 +1,16 @@
 # Workflows tab — parked (2026-06-10)
 
+> [!warning] Superseded 2026-08-29
+> The parked machinery described below was **deleted**, not merely unrouted, during
+> the panel production-hardening pass: `WorkflowBuilderPage`, every
+> `mode === "workflow"` branch in the builder, `graphToWorkflow`/`workflowToGraph`
+> in `builder/graph.ts`, and the `useWorkflows`/`useSaveWorkflow`/`useDeleteWorkflow`/
+> `fetchWorkflowDefinition` hooks are gone (~250 lines). The reasoning below still
+> holds and the backend routes still exist — but the "re-enable" steps are now a
+> rewrite, not an uncomment. Recover the deleted code from git history at commit
+> `883b725` if the tab is ever revived.
+
+
 > The "Workflows" nav tab was removed from the panel. Pipelines is the single
 > automation builder. This note explains why, what was removed vs kept, and
 > exactly how to bring Workflows back when it earns its place.

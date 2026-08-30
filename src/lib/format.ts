@@ -11,6 +11,16 @@ const DIVISIONS: [number, Intl.RelativeTimeFormatUnit][] = [
   [Number.POSITIVE_INFINITY, "years"],
 ];
 
+/**
+ * Drop `<user_data>` framing from agent text. The kernel wraps the transcript it
+ * shows each agent in those tags (injection safety) and some models mirror them
+ * back into their reply; the kernel now strips them on write, but turns recorded
+ * before that fix still carry them, so strip at render too.
+ */
+export function stripUserDataTags(content: string): string {
+  return content.replace(/<\/?user_data>/gi, "").trim();
+}
+
 /** "3 minutes ago" / "in 2 days" from an RFC3339 timestamp. */
 export function relativeTime(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -95,6 +105,33 @@ export function eventDetails(details: string | null | undefined): string {
   } catch {
     return trimmed;
   }
+}
+
+/**
+ * Cap for JSON we hand to a `<pre>`. A multi-MB tool result laid out as
+ * monospace text blocks the main thread for seconds (the browser has to lay out
+ * every line to size the scroll box), which reads as a frozen page.
+ */
+const MAX_PRE_CHARS = 20_000;
+
+/**
+ * Pretty-print a JSON blob for display, truncated at {@link MAX_PRE_CHARS}.
+ * Oversized input skips the parse/stringify entirely — reformatting a blob
+ * that's about to be cut is pure main-thread cost. Non-JSON passes through.
+ */
+export function prettyJson(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let text = raw;
+  if (raw.length <= MAX_PRE_CHARS) {
+    try {
+      text = JSON.stringify(JSON.parse(raw), null, 2);
+    } catch {
+      /* not JSON — show the raw text */
+    }
+  }
+  if (text.length <= MAX_PRE_CHARS) return text;
+  const dropped = text.length - MAX_PRE_CHARS;
+  return `${text.slice(0, MAX_PRE_CHARS)}\n\n… ${dropped.toLocaleString()} more characters truncated — export the chat for the full payload.`;
 }
 
 /** snake_case / camelCase key → "Title Case" label. */

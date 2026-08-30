@@ -64,10 +64,11 @@ src/
   features/          one folder/file per nav area; pages + dialogs (the UI)
   app/               router.tsx (guarded, scope-gated route tree), shell.tsx, nav.ts, theme.ts
   auth/              store.ts (zustand + grants()/can()), actions.ts (login/hydrate), login.tsx, scope-guard.tsx
-  realtime/          connection.ts (WS singleton + backoff/heartbeat), subscriptions, useChannel,
-                     cacheBridge, useEventSource (fetch-SSE), useChatStream, protocol.ts
+  realtime/          connection.ts (WS singleton + ticket auth + backoff/heartbeat),
+                     subscriptions.ts, useChannel, cacheBridge, protocol.ts
   components/        shared: data-table, query-state, empty-state, page-header, status-badge, ui/*
-  lib/               query.ts (QueryClient), errors.ts, confirm.tsx, format.ts, utils.ts (cn)
+  lib/               query.ts (QueryClient), errors.ts, confirm.tsx, use-dirty-guard.ts,
+                     format.ts, utils.ts (cn)
 contract/openapi.json  vendored API contract (source of all generated types)
 ```
 
@@ -77,9 +78,10 @@ There is intentionally **no "Workflows" nav tab** — only Pipelines. Kernel
 workflows (`WorkflowSpec`) compile into pipelines and run on the same engine,
 the REST API has no workflow-run endpoint, and the panel's palette (agents +
 tools) can't express anything a pipeline can't — so the tab was redundant and
-weaker. The builder's `mode="workflow"` machinery, graph converters, and query
-hooks are all still in the codebase, only the nav/routes/list page were
-removed. **Do not re-add the tab without reading
+weaker. As of 2026-08-29 the machinery is **deleted, not just unrouted**: the
+`mode="workflow"` branches, `WorkflowBuilderPage`, `graphToWorkflow`/`workflowToGraph`
+and the four workflow query hooks are gone (~250 lines; recover from git at
+`883b725` if ever needed). The backend routes still exist. **Do not re-add the tab without reading
 [`docs/workflows-tab-parked.md`](docs/workflows-tab-parked.md)** (full
 rationale + exact re-enable steps).
 
@@ -110,8 +112,19 @@ rationale + exact re-enable steps).
   a global one would double-toast.
 - **Realtime:** the WS connection (`connection.ts`) is a module singleton driven by the
   auth store (connect on key, drop on logout) with backoff + heartbeat. Chat streaming
-  uses the SSE endpoint via `streamChatMessage` (`api/queries/chat.ts`), not the WS
-  `useChatStream` (which is reserved for later phases).
+  uses the SSE endpoint via `streamChatMessage` (`api/queries/chat.ts`) driven by the
+  module-scoped store in `features/chat/stream-store.ts`. The unused WS chat hooks
+  (`useChatStream`, `useEventSource`) were deleted 2026-08-29 — bring them back from git
+  history if the WS chat path is ever wired.
+- **Query keys must stay disjoint across domains.** A key that is a prefix of another
+  silently invalidates it *and cancels its in-flight refetch* (`invalidateQueries` defaults
+  to `cancelRefetch: true`). `src/api/queries/keys.test.ts` enforces this.
+- **Never gate a skeleton on `isPending`.** In React Query v5 that is true for a disabled
+  query and for a paused (offline) one — both would spin forever. `QueryState` has a
+  separate `idle` phase; use `isLoading` for a genuine in-flight fetch.
+- **Anything that can lose unsaved work uses `useDirtyGuard`** (`src/lib/use-dirty-guard.ts`),
+  which covers in-app navigation, reload/close, and — via `confirmDiscard()` — dialog
+  closes and in-place document switches.
 
 ## Adding a feature page
 

@@ -10,6 +10,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { relativeTime } from "@/lib/format";
+import { taskTitle } from "@/lib/task-title";
 import { cn } from "@/lib/utils";
 import { RunTaskDialog } from "./run-task-dialog";
 import type { TaskSummary } from "@/api/models";
@@ -21,13 +22,18 @@ export interface TaskSearch {
 }
 
 const PAGE = 25;
-const STATUS_CHIPS = ["all", "running", "completed", "failed"] as const;
+// Values are the API's `TaskState` vocabulary (`complete`, not `completed`).
+const STATUS_CHIPS = ["all", "running", "complete", "failed"] as const;
 
 const columns: Column<TaskSummary>[] = [
   {
     key: "prompt",
     header: "Prompt",
-    cell: (t) => <span className="line-clamp-1 font-medium">{t.prompt_preview}</span>,
+    cell: (t) => (
+      <span className="line-clamp-1 font-medium" title={t.prompt_preview}>
+        {taskTitle(t.prompt_preview)}
+      </span>
+    ),
   },
   {
     key: "agent",
@@ -48,15 +54,24 @@ export function TasksPage() {
   const offset = search.offset ?? 0;
   const q = (search.q ?? "").toLowerCase();
   const filter: TaskFilter = {
-    status: search.status && search.status !== "all" ? search.status : undefined,
+    // Old bookmarks may still carry `completed`; the API vocabulary is `complete`.
+    status:
+      search.status && search.status !== "all"
+        ? search.status === "completed"
+          ? "complete"
+          : search.status
+        : undefined,
     limit: PAGE,
     offset,
   };
   const query = useTasks(filter);
   useInvalidateOnEvent("tasks", [taskKeys.all], { debounceMs: 400 });
 
-  const setSearch = (patch: Partial<TaskSearch>) =>
-    navigate({ to: "/tasks", search: { ...search, ...patch } });
+  // `replace` for search-as-you-type: `navigate` pushes by default, so typing
+  // "deploy" left six history entries and Back needed six presses. Chips and
+  // the pager stay pushes — those are deliberate navigations worth going back to.
+  const setSearch = (patch: Partial<TaskSearch>, replace = false) =>
+    navigate({ to: "/tasks", search: { ...search, ...patch }, replace });
 
   return (
     <div>
@@ -82,7 +97,7 @@ export function TasksPage() {
         ))}
         <Input
           value={search.q ?? ""}
-          onChange={(e) => setSearch({ q: e.target.value })}
+          onChange={(e) => setSearch({ q: e.target.value }, true)}
           placeholder="Filter prompt…"
           className="ml-auto max-w-xs"
         />

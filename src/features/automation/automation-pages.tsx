@@ -11,6 +11,7 @@ import {
   useDeleteSchedule,
   usePipelines,
   useRunPipeline,
+  usePipelineRunEvents,
   useDeletePipeline,
   useImportPipeline,
   exportPipeline,
@@ -37,12 +38,22 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
 import { toastError } from "@/lib/errors";
-import { relativeTime } from "@/lib/format";
+import { absoluteTime, relativeTime } from "@/lib/format";
+import { durationBetween, formatDuration } from "@/lib/task-duration";
+import { ApiError } from "@/api/client";
 import type { ScheduleSummary, PipelineSummary } from "@/api/models";
+
+const EMPTY_SCHEDULE = {
+  name: "",
+  agent_name: "",
+  cron: "0 9 * * *",
+  prompt: "",
+  delivery_mode: "via_agent",
+};
 
 function CreateScheduleDialog() {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", agent_name: "", cron: "0 9 * * *", prompt: "", delivery_mode: "via_agent" });
+  const [form, setForm] = useState(EMPTY_SCHEDULE);
   const [preview, setPreview] = useState<string[]>([]);
   const agents = useAgents();
   const create = useCreateSchedule();
@@ -61,8 +72,10 @@ function CreateScheduleDialog() {
     e.preventDefault();
     try {
       await create.mutateAsync({
+        // No silent fallback to the first agent: the schedule runs under this
+        // agent's permissions, so an unset select must not quietly pick one.
         name: form.name.trim(),
-        agent_name: form.agent_name || (agents.data?.[0]?.name ?? ""),
+        agent_name: form.agent_name,
         cron: form.cron.trim(),
         prompt: form.prompt.trim(),
         delivery_mode: form.delivery_mode,
@@ -74,19 +87,31 @@ function CreateScheduleDialog() {
     }
   }
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        // Every sibling dialog resets on close; this one used to reopen showing
+        // the previous schedule's name and prompt.
+        if (!o) {
+          setForm(EMPTY_SCHEDULE);
+          setPreview([]);
+        }
+      }}
+    >
       <DialogTrigger asChild>
         <Button>New schedule</Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create schedule</DialogTitle>
+          <DialogDescription>Recurring cron job run by an agent; preview the next runs before saving.</DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="grid gap-3">
           <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Name" required />
-          <Select value={form.agent_name} onChange={(e) => set("agent_name", e.target.value)}>
-            <option value="">{agents.data?.length ? "Agent…" : "No agents"}</option>
-            {(agents.data ?? []).map((a) => (
+          <Select value={form.agent_name} onChange={(e) => set("agent_name", e.target.value)} required>
+            <option value="">{agents.data?.length ? "Agent to run it as…" : "No agents"}</option>
+            {(agents.data ?? []).filter((a) => a.status !== "offline").map((a) => (
               <option key={a.id} value={a.name}>{a.name}</option>
             ))}
           </Select>
@@ -108,7 +133,12 @@ function CreateScheduleDialog() {
           </Select>
           <Textarea value={form.prompt} onChange={(e) => set("prompt", e.target.value)} placeholder="Prompt to run…" required />
           <DialogFooter>
-            <Button type="submit" disabled={create.isPending || !form.name.trim() || !form.prompt.trim()}>
+            <Button
+              type="submit"
+              disabled={
+                create.isPending || !form.name.trim() || !form.prompt.trim() || !form.agent_name
+              }
+            >
               Create
             </Button>
           </DialogFooter>
@@ -175,10 +205,14 @@ export function SchedulesPage() {
   const resume = useToggleSchedule("resume");
   const del = useDeleteSchedule();
   const [historyId, setHistoryId] = useState<string | null>(null);
-  async function onDelete(id: string) {
-    if (!(await confirm({ title: "Delete schedule?", destructive: true, confirmLabel: "Delete" }))) return;
-    del.mutateAsync(id).then(() => toast.success("Deleted")).catch(toastError);
+  // A hard DELETE with no undo, so the prompt has to name what it destroys.
+  async function onDelete(s: ScheduleSummary) {
+    if (!(await confirm({ title: `Delete schedule ${s.name}?`, destructive: true, confirmLabel: "Delete" }))) return;
+    del.mutateAsync(String(s.id)).then(() => toast.success("Deleted")).catch(toastError);
   }
+  // One flight at a time: pause/resume are the same toggle, and a double-click
+  // used to fire two requests whose order decided the final state.
+  const toggling = pause.isPending || resume.isPending;
   const columns: Column<ScheduleSummary>[] = [
     { key: "name", header: "Name", cell: (s) => <span className="font-medium">{s.name}</span> },
     {
@@ -190,7 +224,8 @@ export function SchedulesPage() {
     {
       key: "cron",
       header: "Cron",
-      cell: (s) => (s.cron ? <code className="text-xs">{s.cron}</code> : <span className="text-muted-foreground">—</span>),
+      cell: (s) =>
+        s.cron ? <code className="whitespace-nowrap text-xs">{s.cron}</code> : <span className="text-muted-foreground">—</span>,
     },
     {
       key: "next",
@@ -208,15 +243,18 @@ export function SchedulesPage() {
               <Button variant="ghost" size="sm" onClick={() => setHistoryId(String(s.id))}>
                 History
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => pause.mutateAsync(String(s.id)).catch(toastError)}>
-                Pause
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => resume.mutateAsync(String(s.id)).catch(toastError)}>
-                Resume
-              </Button>
+              {s.state === "active" ? (
+                <Button variant="ghost" size="sm" disabled={toggling} onClick={() => pause.mutateAsync(String(s.id)).catch(toastError)}>
+                  Pause
+                </Button>
+              ) : (
+                <Button variant="ghost" size="sm" disabled={toggling} onClick={() => resume.mutateAsync(String(s.id)).catch(toastError)}>
+                  Resume
+                </Button>
+              )}
             </>
           )}
-          <Button variant="ghost" size="sm" onClick={() => onDelete(String(s.id))}>
+          <Button variant="ghost" size="sm" onClick={() => onDelete(s)}>
             Delete
           </Button>
         </span>
@@ -245,18 +283,46 @@ steps:
     prompt: "…"
 `;
 
+/** The `name:` a pipeline YAML declares — enough to spot a collision before installing. */
+function yamlPipelineName(yaml: string): string {
+  return yaml.match(/^name:[ \t]*['"]?([^'"\n#]+?)['"]?[ \t]*$/m)?.[1] ?? "";
+}
+
 function ImportPipelineDialog() {
   const [open, setOpen] = useState(false);
   const [yaml, setYaml] = useState("");
+  const existing = usePipelines();
   const importPipeline = useImportPipeline();
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
+    // Import writes over a same-named pipeline in place, so a paste that reuses
+    // a production name destroys it with no prompt and no undo — same hole the
+    // builder had before the API started answering 409.
+    const target = yamlPipelineName(yaml);
+    if (target && (existing.data ?? []).some((p) => p.name === target)) {
+      const replace = await confirm({
+        title: `Replace the pipeline "${target}"?`,
+        description: "A pipeline with that name already exists. Importing replaces its definition — there is no undo.",
+        confirmLabel: "Replace",
+        destructive: true,
+      });
+      if (!replace) return;
+    }
     try {
       await importPipeline.mutateAsync(yaml);
       toast.success("Pipeline installed");
       setOpen(false);
       setYaml("");
     } catch (err) {
+      // Unlike POST /pipelines, ImportPipelineRequest carries no `overwrite`
+      // flag, so a 409 here has no retry — say what to do instead of failing
+      // with a bare conflict code.
+      if (err instanceof ApiError && err.status === 409) {
+        toast.error(`Pipeline "${target || "with that name"}" already exists`, {
+          description: "Rename it in the YAML, or delete the existing pipeline first.",
+        });
+        return;
+      }
       toastError(err);
     }
   }
@@ -293,36 +359,180 @@ function ImportPipelineDialog() {
   );
 }
 
+/**
+ * A detached run's snapshot is an untyped kernel Value; this mirrors
+ * `PipelineRun` / `StepResult` (agos agentos-pipeline/src/types.rs). Every
+ * field is optional so drift degrades to "—" and the raw JSON below.
+ */
+interface RunStep {
+  step_id?: string;
+  status?: string;
+  error?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  attempt?: number;
+}
+interface RunSnapshot {
+  status?: string;
+  started_at?: string;
+  completed_at?: string | null;
+  error?: string | null;
+  output?: string | null;
+  step_results?: Record<string, RunStep>;
+}
+
+function RunSnapshotView({ snap }: { snap: Record<string, unknown> }) {
+  const run = snap as RunSnapshot;
+  const steps = Object.entries(run.step_results ?? {})
+    .map(([id, s]) => ({ ...s, step_id: s.step_id ?? id }))
+    // Pending steps have no start time; keep them after the ones that ran.
+    .sort((a, b) =>
+      !a.started_at || !b.started_at
+        ? Number(!a.started_at) - Number(!b.started_at)
+        : a.started_at.localeCompare(b.started_at),
+    );
+  const took = run.completed_at
+    ? durationBetween(run.started_at, run.completed_at)
+    : durationBetween(run.started_at, new Date().toISOString());
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
+        {run.status && <StatusBadge status={run.status} />}
+        {run.started_at && (
+          <span title={absoluteTime(run.started_at)}>started {relativeTime(run.started_at)}</span>
+        )}
+        {run.completed_at && (
+          <span title={absoluteTime(run.completed_at)}>
+            finished {relativeTime(run.completed_at)}
+          </span>
+        )}
+        {took && <span>{run.completed_at ? "took" : "running for"} {took}</span>}
+      </div>
+      {run.error && (
+        <p className="whitespace-pre-wrap break-words rounded-md border border-destructive/40 p-2 font-mono text-xs text-destructive">
+          {run.error}
+        </p>
+      )}
+      {steps.length === 0 ? (
+        <p className="text-muted-foreground">No steps recorded yet.</p>
+      ) : (
+        <ol className="divide-y divide-border rounded-md border border-border">
+          {steps.map((s) => (
+            <li key={s.step_id} className="space-y-1 p-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 truncate font-medium">{s.step_id}</span>
+                <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                  {s.attempt != null && s.attempt > 1 && <span>attempt {s.attempt}</span>}
+                  <span>
+                    {s.duration_ms != null
+                      ? formatDuration(s.duration_ms)
+                      : (durationBetween(s.started_at, s.completed_at) ?? "—")}
+                  </span>
+                  {s.status && <StatusBadge status={s.status} />}
+                </span>
+              </div>
+              {s.error && (
+                <p className="whitespace-pre-wrap break-words font-mono text-xs text-destructive">
+                  {s.error}
+                </p>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+      {run.output && (
+        <details>
+          <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+            Output
+          </summary>
+          <p className="mt-2 whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs">
+            {run.output}
+          </p>
+        </details>
+      )}
+      <details>
+        <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+          Raw JSON
+        </summary>
+        <pre className="mt-2 max-h-[40vh] overflow-auto rounded-md bg-muted p-3 text-xs">
+          {JSON.stringify(snap, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
 function RunPipelineDialog({ name }: { name: string }) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
+  // The kernel requires a governing agent for permission enforcement — running
+  // without one fails (as a 500) in resolve_pipeline_agent.
+  const [agentName, setAgentName] = useState("");
+  const agents = useAgents();
+  // Set once a detached run starts; switches the dialog to the live snapshot.
+  const [runId, setRunId] = useState<string | null>(null);
   const run = useRunPipeline();
+  // Null while the form is up, and again once the dialog closes, so the hook
+  // stays disabled; it stops its own polling when the snapshot reports a
+  // terminal status.
+  const events = usePipelineRunEvents(open ? runId : null);
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     try {
-      await run.mutateAsync({ name, input: input.trim() });
+      const res = (await run.mutateAsync({ name, input: input.trim(), agent_name: agentName })) as
+        | Record<string, unknown>
+        | undefined;
+      // Detached runs return { id, status, detached, background_task_id }
+      // (kernel commands/pipeline.rs) — `id` is the run id the events
+      // endpoint expects.
+      const id = res && typeof res.id === "string" ? res.id : null;
       toast.success(`Pipeline "${name}" started`);
-      setOpen(false);
       setInput("");
+      if (id) setRunId(id);
+      else setOpen(false); // no run id returned — nothing to watch
     } catch (err) {
       toastError(err);
     }
   }
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setRunId(null);
+      }}
+    >
       <DialogTrigger asChild>
         <Button variant="ghost" size="sm">Run</Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className={runId ? "max-w-2xl" : undefined}>
         <DialogHeader>
-          <DialogTitle>Run {name}</DialogTitle>
+          <DialogTitle>{runId ? `Run ${runId.slice(0, 8)}… — ${name}` : `Run ${name}`}</DialogTitle>
+          <DialogDescription>
+            {runId
+              ? "Live step status; polling stops once the run settles."
+              : "Pick the governing agent and the input, then start a detached run."}
+          </DialogDescription>
         </DialogHeader>
-        <form onSubmit={onSubmit} className="grid gap-3">
-          <Textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Pipeline input…" required />
-          <DialogFooter>
-            <Button type="submit" disabled={run.isPending || !input.trim()}>Run</Button>
-          </DialogFooter>
-        </form>
+        {runId ? (
+          <div className="max-h-[60vh] overflow-y-auto">
+            <QueryState query={events}>{(snap) => <RunSnapshotView snap={snap} />}</QueryState>
+          </div>
+        ) : (
+          <form onSubmit={onSubmit} className="grid gap-3">
+            <Select value={agentName} onChange={(e) => setAgentName(e.target.value)} required>
+              <option value="">{agents.data?.length ? "Governing agent…" : "No agents"}</option>
+              {(agents.data ?? []).filter((a) => a.status !== "offline").map((a) => (
+                <option key={a.id} value={a.name}>{a.name}</option>
+              ))}
+            </Select>
+            <Textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Pipeline input…" required />
+            <DialogFooter>
+              <Button type="submit" disabled={run.isPending || !input.trim() || !agentName}>Run</Button>
+            </DialogFooter>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
   );

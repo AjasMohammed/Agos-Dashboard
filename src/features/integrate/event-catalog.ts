@@ -25,8 +25,15 @@ export interface EventCategory {
   events: string[];
 }
 
-/** Curated display order + labels; data (events, resource) is generated. */
-const CURATED: { value: string; label: string }[] = [
+/**
+ * Curated display order + labels; data (events, resource) is generated.
+ *
+ * Exported so the test can assert every entry still matches a generated
+ * category: an unmatched one is dropped here and re-added by the uncurated
+ * fallback below with a humanized label, which keeps the catalog length
+ * identical while silently regressing the label.
+ */
+export const CURATED: { value: string; label: string }[] = [
   { value: "TaskLifecycle", label: "Tasks" },
   { value: "AgentLifecycle", label: "Agents" },
   { value: "AgentCommunication", label: "Agent messages" },
@@ -249,8 +256,13 @@ export function prettifyThrottle(debugStr: string): string {
 const PREDICATE_RE = /^([A-Za-z0-9_.-]+)\s*(==|!=|>=|<=|>|<|in|contains)\s*(.+)$/i;
 const NUMERIC_RE = /^-?\d+(\.\d+)?$/;
 
-/** Split on whitespace-bounded `and`, respecting quotes and `[...]` lists. */
-function splitClauses(input: string): string[] {
+/**
+ * Split on whitespace-bounded `and`, respecting quotes and `[...]` lists.
+ * `error` reports what the kernel tokenizer would reject: an input that ends
+ * inside a quote or a `[` list, or a `]` with no matching `[`. The UI must not
+ * call any of those valid.
+ */
+function splitClauses(input: string): { clauses: string[]; error: string | null } {
   const s = input.trim();
   const out: string[] = [];
   let start = 0;
@@ -271,7 +283,14 @@ function splitClauses(input: string): string[] {
     if (ch === "'" && !inDouble) inSingle = !inSingle;
     else if (ch === '"' && !inSingle) inDouble = !inDouble;
     else if (ch === "[" && !inSingle && !inDouble) depth++;
-    else if (ch === "]" && !inSingle && !inDouble && depth > 0) depth--;
+    else if (ch === "]" && !inSingle && !inDouble) {
+      // The kernel errors on a `]` with no open `[` (event_bus.rs
+      // `split_filter_clauses`) and any parse error compiles to a filter that
+      // matches EVERY event — so a duplicated paste (`… in [a, b]]`) must not
+      // pass here. Distinct message: it is the opposite typo from an unclosed `[`.
+      if (depth === 0) return { clauses: [], error: "Stray “]” — remove the extra bracket." };
+      depth--;
+    }
 
     if (
       !inSingle &&
@@ -289,7 +308,46 @@ function splitClauses(input: string): string[] {
     }
   }
   out.push(s.slice(start).trim());
-  return out;
+  return {
+    clauses: out,
+    error:
+      inSingle || inDouble || depth > 0 ? "Unclosed quote or “[” — finish the value." : null,
+  };
+}
+
+/**
+ * Split a list literal's inner text on commas that aren't inside quotes,
+ * mirroring the kernel's `split_list_items` — a naive `split(",")` would call
+ * the valid `['a,b', c]` an empty-item error.
+ */
+function splitListItems(inner: string): string[] {
+  const items: string[] = [];
+  let cur = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escape = false;
+  for (const ch of inner) {
+    if ((inSingle || inDouble) && escape) {
+      escape = false;
+      cur += ch;
+      continue;
+    }
+    if ((inSingle || inDouble) && ch === "\\") {
+      escape = true;
+      cur += ch;
+      continue;
+    }
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === "," && !inSingle && !inDouble) {
+      items.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  items.push(cur);
+  return items;
 }
 
 /**
@@ -300,7 +358,9 @@ function splitClauses(input: string): string[] {
 export function validateFilter(input: string): string | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
-  for (const clause of splitClauses(trimmed)) {
+  const { clauses, error } = splitClauses(trimmed);
+  if (error) return error;
+  for (const clause of clauses) {
     if (!clause) return "Empty condition — remove a stray 'and'.";
     const m = clause.match(PREDICATE_RE);
     if (!m) return `“${clause}” isn’t a valid condition (use: field == value).`;
@@ -310,6 +370,13 @@ export function validateFilter(input: string): string | null {
     if (op === "in") {
       if (!(value.startsWith("[") && value.endsWith("]"))) {
         return `“${op}” needs a list, e.g. [a, b, c].`;
+      }
+      // The kernel's `parse_list_value` rejects an empty item ([a,,b], [a,]) and
+      // a rejected filter matches every event — an empty list ([]) is fine, it
+      // just never matches. Same fail-open hazard as the stray bracket above.
+      const inner = value.slice(1, -1);
+      if (inner.trim() && splitListItems(inner).some((item) => !item.trim())) {
+        return `“${value}” has an empty item — remove the extra comma.`;
       }
     } else if (op === ">" || op === ">=" || op === "<" || op === "<=") {
       if (!NUMERIC_RE.test(value)) return `“${op}” needs a number, got “${value}”.`;
@@ -337,7 +404,9 @@ export function fieldsForSelection(selection: string): string[] {
     if (!cat) return [];
     const lists = cat.events.map((e) => EVENT_FIELDS[e] ?? []);
     if (lists.length === 0 || lists.some((l) => l.length === 0)) return [];
-    return lists.reduce((common, l) => common.filter((f) => l.includes(f)));
+    // Spread: reduce over a single-element list returns that element itself,
+    // which would hand the caller the shared EVENT_FIELDS array to mutate.
+    return [...lists.reduce((common, l) => common.filter((f) => l.includes(f)))];
   }
-  return EVENT_FIELDS[selection] ?? [];
+  return [...(EVENT_FIELDS[selection] ?? [])];
 }

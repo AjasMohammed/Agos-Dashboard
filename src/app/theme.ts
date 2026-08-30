@@ -2,12 +2,20 @@ import { create } from "zustand";
 
 export type Theme = "light" | "dark" | "system";
 
+/** Keep in sync with the pre-paint theme script in index.html. */
 const STORAGE_KEY = "agentos-panel.theme";
+const DARK_QUERY = "(prefers-color-scheme: dark)";
+
+function isTheme(value: unknown): value is Theme {
+  return value === "light" || value === "dark" || value === "system";
+}
+
+function darkMediaQuery(): MediaQueryList | null {
+  return typeof window !== "undefined" && window.matchMedia ? window.matchMedia(DARK_QUERY) : null;
+}
 
 function systemPrefersDark(): boolean {
-  return typeof window !== "undefined" && window.matchMedia
-    ? window.matchMedia("(prefers-color-scheme: dark)").matches
-    : false;
+  return darkMediaQuery()?.matches ?? false;
 }
 
 function resolve(theme: Theme): "light" | "dark" {
@@ -21,7 +29,11 @@ function apply(theme: Theme): void {
 
 function loadTheme(): Theme {
   try {
-    return (localStorage.getItem(STORAGE_KEY) as Theme) || "dark";
+    // Validate: the value used to be cast straight to Theme, so a stale or
+    // hand-edited entry ("neon") silently resolved as a non-dark, non-light
+    // theme and left the class toggle in whatever state it was.
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return isTheme(stored) ? stored : "dark";
   } catch {
     return "dark";
   }
@@ -49,3 +61,12 @@ export const useTheme = create<ThemeState>((set) => ({
     set({ theme: t, resolved: resolve(t) });
   },
 }));
+
+// `system` has to follow the OS switching appearance mid-session; without this
+// it only ever resolved at page load.
+darkMediaQuery()?.addEventListener("change", () => {
+  const { theme } = useTheme.getState();
+  if (theme !== "system") return;
+  apply(theme);
+  useTheme.setState({ resolved: resolve(theme) });
+});

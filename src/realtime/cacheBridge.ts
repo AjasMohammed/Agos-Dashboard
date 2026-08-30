@@ -1,9 +1,8 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { QueryKey } from "@tanstack/react-query";
 import { queryClient } from "@/lib/query";
 import { useChannel } from "./useChannel";
 import { useRealtimeStatus } from "./connection";
-import type { EventFrame } from "./protocol";
 
 /**
  * Invalidate one or more query keys whenever an event lands on `channel`.
@@ -15,6 +14,18 @@ export function useInvalidateOnEvent(
   options: { debounceMs?: number } = {},
 ): void {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A debounced invalidation queued right before unmount would otherwise still
+  // fire and refetch queries the page no longer shows. `channel` is a dep, not
+  // just unmount: switching channels (`tasks:a` → `tasks:b`) must not leave a
+  // queued invalidation armed against the previous render's keys. `queryKeys` is
+  // deliberately *not* a dep — callers pass a fresh array literal every render,
+  // so it would clear the timer before it ever fired and defeat the debounce.
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [channel],
+  );
   useChannel(channel, () => {
     const run = () => queryKeys.forEach((queryKey) => queryClient.invalidateQueries({ queryKey }));
     if (!options.debounceMs) {
@@ -23,20 +34,6 @@ export function useInvalidateOnEvent(
     }
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(run, options.debounceMs);
-  });
-}
-
-/**
- * Patch a query's cached data in place on each event — avoids a refetch for
- * cheap updates (e.g. a task status badge, a streaming counter).
- */
-export function usePatchOnEvent<T>(
-  channel: string | null | undefined,
-  queryKey: QueryKey,
-  updater: (previous: T | undefined, event: EventFrame) => T,
-): void {
-  useChannel(channel, (event) => {
-    queryClient.setQueryData<T>(queryKey, (previous) => updater(previous, event));
   });
 }
 

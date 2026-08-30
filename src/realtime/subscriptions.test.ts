@@ -6,7 +6,10 @@ const h = vi.hoisted(() => ({
   sent: [] as ClientFrame[],
   frame: null as ((f: ServerFrame) => void) | null,
   reconnect: null as (() => void) | null,
+  toastError: vi.fn(),
 }));
+
+vi.mock("sonner", () => ({ toast: { error: h.toastError } }));
 
 vi.mock("./connection", () => ({
   sendFrame: (f: ClientFrame) => h.sent.push(f),
@@ -26,6 +29,7 @@ beforeEach(() => {
   h.sent.length = 0;
   h.frame = null;
   h.reconnect = null;
+  h.toastError.mockClear();
   __test.reset();
 });
 
@@ -64,5 +68,47 @@ describe("subscription manager (ref-counted)", () => {
     h.reconnect?.();
     const channels = h.sent.filter((f) => f.type === "subscribe").map((f) => (f as { channel: string }).channel);
     expect(channels.sort()).toEqual(["audit", "tasks"]);
+  });
+
+  it("unsubscribes from the ack when the last handler left before it arrived", () => {
+    // StrictMode / fast nav: mount and unmount inside the ack round trip.
+    const off = subscribe("tasks", () => {});
+    off();
+    // Entry is retained (no id to release with yet), so the ack still lands.
+    expect(__test.activeChannels()).toContain("tasks");
+    expect(h.sent.some((f) => f.type === "unsubscribe")).toBe(false);
+
+    h.frame?.({ type: "subscribed", channel: "tasks", subscription_id: "sub-late" });
+    expect(h.sent).toContainEqual({ type: "unsubscribe", subscription_id: "sub-late" });
+    expect(__test.activeChannels()).not.toContain("tasks");
+  });
+
+  it("keeps the in-flight subscription when a handler re-subscribes before the ack", () => {
+    subscribe("tasks", () => {})();
+    const calls: string[] = [];
+    subscribe("tasks", (e) => calls.push(e.channel)); // StrictMode remount
+    h.frame?.({ type: "subscribed", channel: "tasks", subscription_id: "sub-1" });
+
+    expect(h.sent.filter((f) => f.type === "subscribe")).toHaveLength(1);
+    expect(h.sent.some((f) => f.type === "unsubscribe")).toBe(false);
+    h.frame?.({ type: "event", channel: "tasks", event: "task.updated", data: {} });
+    expect(calls).toEqual(["tasks"]);
+  });
+
+  it("surfaces error frames without breaking other channels", () => {
+    const calls: string[] = [];
+    subscribe("tasks", (e) => calls.push(e.channel));
+
+    expect(() =>
+      h.frame?.({ type: "error", code: "FORBIDDEN", message: "scope audit:r required" }),
+    ).not.toThrow();
+    expect(h.toastError).toHaveBeenCalledTimes(1);
+
+    // Codes the operator cannot act on warn only — no toast.
+    h.frame?.({ type: "error", code: "UNKNOWN_SUBSCRIPTION", message: "stale id" });
+    expect(h.toastError).toHaveBeenCalledTimes(1);
+
+    h.frame?.({ type: "event", channel: "tasks", event: "task.updated", data: {} });
+    expect(calls).toEqual(["tasks"]);
   });
 });

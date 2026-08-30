@@ -61,6 +61,14 @@ export function grants(scopes: string[], required: string): boolean {
   });
 }
 
+// An earlier build persisted the key to `localStorage`, where nothing expires or
+// clears it — drop any leftover credential from those sessions on boot.
+try {
+  localStorage.removeItem(STORAGE_KEY);
+} catch {
+  /* storage unavailable — nothing to clean */
+}
+
 const initial = load();
 
 export const useAuthStore = create<AuthState>((set, get) => ({

@@ -14,7 +14,7 @@ module.exports = {
     "dist",
     "node_modules",
     "src/api/types.gen.ts",
-    "src/api/events.gen.ts",
+    "src/realtime/events.gen.ts",
     "e2e",
     "playwright.config.ts",
   ],

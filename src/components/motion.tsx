@@ -1,19 +1,20 @@
 import { useEffect, type ReactNode } from "react";
-import {
-  motion,
-  useReducedMotion,
-  useSpring,
-  useTransform,
-  type Variants,
-} from "framer-motion";
+import { motion, useReducedMotion, useSpring, useTransform, type Variants } from "framer-motion";
 
 /** Shared ease-out curve for entrances (snappy start, soft landing). */
 export const EASE_OUT = [0.22, 1, 0.36, 1] as const;
 
 /** Per-route entrance: subtle rise + fade. Keyed by pathname in the shell. */
-export function PageTransition({ children }: { children: ReactNode }) {
+export function PageTransition({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
   return (
     <motion.div
+      className={className}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, ease: EASE_OUT }}

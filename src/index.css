@@ -20,7 +20,9 @@
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
     --success: 142 71% 40%;
-    --warning: 35 92% 44%;
+    /* 44% lightness was ~2.7:1 on --background — the text-xs disconnect banner
+       and status badges failed WCAG AA. 32% is ~5:1. (Dark mode is fine as-is.) */
+    --warning: 35 92% 32%;
     --border: 220 13% 89%;
     --input: 220 13% 87%;
     --ring: 243 75% 59%;
@@ -59,7 +61,14 @@
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
     font-family:
-      "Fira Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+      "Fira Sans",
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      "Segoe UI",
+      Roboto,
+      Helvetica,
+      Arial,
       sans-serif;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
@@ -107,11 +116,7 @@
   }
 
   .text-gradient {
-    background-image: linear-gradient(
-      135deg,
-      hsl(var(--foreground)),
-      hsl(var(--primary)) 80%
-    );
+    background-image: linear-gradient(135deg, hsl(var(--foreground)), hsl(var(--primary)) 80%);
     background-clip: text;
     -webkit-background-clip: text;
     color: transparent;
@@ -126,4 +131,32 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/*
+ * Streaming caret: a block cursor parked after the last rendered markdown node
+ * of an in-flight reply. Lives on a pseudo-element so it flows with the text
+ * instead of being another element the markdown renderer has to lay out.
+ */
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.streaming > *:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-left: 0.15em;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background-color: currentColor;
+  opacity: 0.7;
+  animation: caret-blink 1s steps(2, start) infinite;
 }

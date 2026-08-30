@@ -10,6 +10,9 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
+/** Rows past this render with no entrance animation. */
+const ANIMATED_ROWS = 20;
+
 export interface Column<T> {
   /** Stable key for the column. */
   key: string;
@@ -52,8 +55,11 @@ export function DataTable<T>({
           {rows.map((row, i) => (
             <motion.tr
               key={getRowId(row)}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
+              // Only the rows a reader actually sees animate: audit and logs
+              // render up to 1000 rows, and a motion value per row costs on
+              // every render even though the cascade caps out after ~10.
+              initial={i < ANIMATED_ROWS ? { opacity: 0 } : false}
+              animate={i < ANIMATED_ROWS ? { opacity: 1 } : undefined}
               transition={{ duration: 0.25, delay: Math.min(i * 0.03, 0.3) }}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
               className={cn(

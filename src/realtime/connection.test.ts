@@ -8,6 +8,7 @@ import {
   useRealtimeStatus,
   __test,
 } from "./connection";
+import { subscribe, __test as subsTest } from "./subscriptions";
 
 /** Minimal fake WebSocket capturing the lifecycle callbacks. */
 class FakeWS {
@@ -43,6 +44,9 @@ beforeEach(() => {
   FakeWS.instances = [];
   __test.setSocketFactory((url) => new FakeWS(url) as unknown as WebSocket);
   __test.setTicketFetcher(async () => "tkt-test");
+  // `__test.reset()` drops connection's frame/reconnect listeners, so the
+  // channel registry has to re-attach too.
+  subsTest.reset();
   useAuthStore.getState().setSession({ apiKey: "k1", scopes: [] });
 });
 
@@ -124,5 +128,30 @@ describe("realtime connection", () => {
     resolveTicket("tkt-late");
     await flushOpen();
     expect(FakeWS.instances.length).toBe(0);
+  });
+
+  it("sends exactly one subscribe per channel across the open and a reconnect", async () => {
+    const subsOn = (ws: FakeWS) =>
+      ws.sent.map((s) => JSON.parse(s) as { type: string }).filter((f) => f.type === "subscribe");
+
+    connectRealtime();
+    // Mounts while the ticket mint is in flight: the subscribe must NOT be
+    // queued, or onopen would flush it and then resubscribe the same channel.
+    subscribe("tasks", () => {});
+    await flushOpen();
+    const first = FakeWS.instances[0];
+    first.fireOpen();
+    expect(subsOn(first)).toEqual([{ type: "subscribe", channel: "tasks" }]);
+
+    first.onmessage?.({
+      data: JSON.stringify({ type: "subscribed", channel: "tasks", subscription_id: "sub-1" }),
+    });
+    first.close(); // unexpected drop → reconnect re-establishes the channel
+    await vi.advanceTimersByTimeAsync(31_000);
+    const second = FakeWS.instances[1];
+    second.fireOpen();
+    expect(subsOn(second)).toEqual([{ type: "subscribe", channel: "tasks" }]);
+    // The dead socket's id must not be reused as an unsubscribe target.
+    expect(second.sent.some((s) => s.includes("unsubscribe"))).toBe(false);
   });
 });

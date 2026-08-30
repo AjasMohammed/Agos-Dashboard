@@ -33,27 +33,45 @@ function ErrorState({ error, retry }: { error: unknown; retry: () => void }) {
  * Render loading/error/empty/data states for a TanStack query in one place, so
  * feature pages stay focused on the success view. States crossfade so the
  * skeleton→data swap doesn't flash.
+ *
+ * Phase order matters: in v5 `isPending` is just `status === "pending"`, which
+ * is also true for a query that is **disabled** (`enabled: false`) or **paused**
+ * (browser offline — the client keeps the default `networkMode: "online"`).
+ * Neither is fetching and neither will ever resolve, so gating the skeleton on
+ * `isPending` left those surfaces shimmering forever with no error and no
+ * retry. `isLoading` (`isPending && isFetching`) is the real "first load in
+ * flight"; everything else pending is `idle`.
+ *
+ * `idle` is its own slot and renders **nothing** by default: the data was never
+ * requested, so the caller's affirmative empty copy ("No episodic memory yet.")
+ * would be a claim about data nobody asked for. Paused (offline) is the one idle
+ * case with something true to say.
  */
 export function QueryState<T>({
   query,
   skeleton,
   empty,
+  idle,
   isEmpty,
   children,
 }: {
   query: UseQueryResult<T>;
   skeleton?: ReactNode;
   empty?: ReactNode;
+  /** Shown for a disabled query — one that was never asked to load. */
+  idle?: ReactNode;
   isEmpty?: (data: T) => boolean;
   children: (data: T) => ReactNode;
 }) {
-  const phase = query.isPending
-    ? "pending"
-    : query.isError
-      ? "error"
-      : isEmpty?.(query.data)
-        ? "empty"
-        : "data";
+  const phase = query.isError
+    ? "error"
+    : query.isLoading
+      ? "pending"
+      : query.isPending
+        ? "idle"
+        : isEmpty?.(query.data)
+          ? "empty"
+          : "data";
   return (
     <AnimatePresence mode="wait" initial={false}>
       <motion.div
@@ -65,6 +83,14 @@ export function QueryState<T>({
       >
         {phase === "pending" && (skeleton ?? <DefaultSkeleton />)}
         {phase === "error" && <ErrorState error={query.error} retry={() => void query.refetch()} />}
+        {phase === "idle" &&
+          (query.fetchStatus === "paused" ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              Offline — this will load when you reconnect.
+            </p>
+          ) : (
+            idle
+          ))}
         {phase === "empty" && empty}
         {phase === "data" && children(query.data as T)}
       </motion.div>

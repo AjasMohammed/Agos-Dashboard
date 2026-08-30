@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { bytes, tokens, usd, relativeTime } from "./format";
+import { bytes, tokens, usd, relativeTime, stripUserDataTags, prettyJson } from "./format";
 
 describe("formatters", () => {
   it("formats bytes", () => {
@@ -21,8 +21,26 @@ describe("formatters", () => {
     expect(usd(null)).toBe("—");
   });
 
+  it("strips mirrored <user_data> framing from agent text", () => {
+    expect(stripUserDataTags("<user_data>hi</user_data>")).toBe("hi");
+    expect(stripUserDataTags("a <USER_DATA>b</User_Data> c")).toBe("a b c");
+    expect(stripUserDataTags("  plain\n")).toBe("plain");
+  });
+
   it("renders relative time for invalid/empty input safely", () => {
     expect(relativeTime(null)).toBe("—");
     expect(relativeTime("not-a-date")).toBe("—");
+  });
+
+  it("pretty-prints JSON and caps oversized payloads", () => {
+    expect(prettyJson('{"a":1}')).toBe('{\n  "a": 1\n}');
+    expect(prettyJson("not json")).toBe("not json");
+    expect(prettyJson(null)).toBeNull();
+
+    // A blob past the cap is truncated, not laid out in full.
+    const huge = JSON.stringify({ blob: "x".repeat(50_000) });
+    const out = prettyJson(huge)!;
+    expect(out.length).toBeLessThan(21_000);
+    expect(out).toContain("more characters truncated");
   });
 });

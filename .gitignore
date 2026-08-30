@@ -20,3 +20,10 @@ test-results
 # Python caches (skills)
 __pycache__/
 *.pyc
+
+# Stray copies of the agos backend trees (config/*.toml, skills/core/*) and a
+# saved API error dump. Nothing in src/ reads them; ignored so `git add -A`
+# cannot commit backend files into the panel repo.
+config/
+skills/
+agent-chats.json

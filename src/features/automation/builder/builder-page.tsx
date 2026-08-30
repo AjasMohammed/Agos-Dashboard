@@ -16,29 +16,27 @@ import {
   type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { ArrowLeft, Loader2, Save, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, Save, Trash2, Wrench, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAgents } from "@/api/queries/agents";
 import { useTools } from "@/api/queries/tools";
-import {
-  fetchPipelineDefinition,
-  fetchWorkflowDefinition,
-  useSavePipeline,
-  useSaveWorkflow,
-} from "@/api/queries/automation";
+import { ApiError } from "@/api/client";
+import { fetchPipelineDefinition, useSavePipeline } from "@/api/queries/automation";
 import { useTheme } from "@/app/theme";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { confirm } from "@/lib/confirm";
 import { toastError } from "@/lib/errors";
+import { useDirtyGuard } from "@/lib/use-dirty-guard";
 import {
   DND_TYPE,
   graphToPipeline,
-  graphToWorkflow,
+  isStepKind,
   makeNode,
   pipelineToGraph,
-  workflowToGraph,
+  type AttachedTool,
   type BuilderNode,
   type StepData,
 } from "./graph";
@@ -46,41 +44,150 @@ import { Field, Palette, StepNode, type PaletteItem } from "./parts";
 
 const nodeTypes = { step: StepNode };
 
-type Mode = "workflow" | "pipeline";
+// Typed as string: the list routes are registered dynamically from NAV_ITEMS,
+// so they aren't part of the router's literal route union.
+const LIST_PATH: string = "/pipelines";
 
 const DEFAULT_EDGE_OPTIONS = {
   markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
   style: { strokeWidth: 1.5 },
 };
 
+interface Draft {
+  name: string;
+  description: string;
+  output: string;
+  nodes: BuilderNode[];
+  edges: Edge[];
+}
+
+/**
+ * Everything a save would persist, as a comparable string. The dirty guard
+ * compares this against the loaded/last-saved document rather than tracking a
+ * "touched" flag, so typing a character and deleting it again is not dirty —
+ * and so moving a node (which *is* persisted, in `ui.positions`) is.
+ *
+ * ponytail: re-stringified on every drag frame. Trivial for the graph sizes a
+ * human builds; memoise per-slice if a few hundred nodes ever show up.
+ */
+function snapshot(d: Draft): string {
+  return JSON.stringify({
+    name: d.name,
+    description: d.description,
+    output: d.output,
+    nodes: d.nodes.map((n) => [n.id, Math.round(n.position.x), Math.round(n.position.y), n.data]),
+    edges: d.edges.map((e) => `${e.source}->${e.target}`).sort(),
+  });
+}
+
+const EMPTY_SNAPSHOT = snapshot({ name: "", description: "", output: "", nodes: [], edges: [] });
+
+/**
+ * Tools attached to an agent node (n8n-style): they live inside the node rather
+ * than on the canvas, and serialize to tool steps that depend on the agent step.
+ */
+function AttachedTools({
+  tools,
+  available,
+  onChange,
+}: {
+  tools: AttachedTool[];
+  available: string[];
+  onChange: (patch: Partial<StepData>) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-muted-foreground">Tools</p>
+      {tools.length === 0 && (
+        <p className="text-[11px] text-muted-foreground/70">
+          Nothing attached. Attached tools run after this agent, with its output available as{" "}
+          <code className="font-mono">{"{{var}}"}</code>.
+        </p>
+      )}
+      {tools.map((t, i) => (
+        <div key={t.id ?? `${t.tool}-${i}`} className="space-y-1 rounded-md border border-border p-2">
+          <div className="flex items-center gap-1.5">
+            <Wrench className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{t.tool}</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6"
+              title="Detach tool"
+              onClick={() => onChange({ tools: tools.filter((_, j) => j !== i) })}
+            >
+              <X className="size-3.5" />
+            </Button>
+          </div>
+          <Textarea
+            value={t.input ?? ""}
+            onChange={(e) =>
+              onChange({
+                tools: tools.map((x, j) => (j === i ? { ...x, input: e.target.value } : x)),
+              })
+            }
+            className="min-h-14 font-mono text-[11px]"
+            placeholder='{ "param": "value" }'
+            spellCheck={false}
+          />
+        </div>
+      ))}
+      <Select
+        value=""
+        onChange={(e) => {
+          if (!e.target.value) return;
+          onChange({ tools: [...tools, { tool: e.target.value, input: "" }] });
+        }}
+      >
+        <option value="">Attach a tool…</option>
+        {available
+          .filter((name) => !tools.some((t) => t.tool === name))
+          .map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+      </Select>
+    </div>
+  );
+}
+
 /** Inspector panel for the currently selected node. */
 function Inspector({
-  mode,
   node,
+  selectedCount,
   agents,
   tools,
   onChange,
   onDelete,
 }: {
-  mode: Mode;
   node: BuilderNode;
+  /** How many nodes the delete button will remove — it acts on the whole selection. */
+  selectedCount: number;
   agents: string[];
   tools: string[];
   onChange: (patch: Partial<StepData>) => void;
   onDelete: () => void;
 }) {
   const d = node.data;
-  const structural = d.kind === "start" || d.kind === "end";
+  const deleteLabel = selectedCount > 1 ? `Delete ${selectedCount} nodes` : "Delete node";
   return (
     <aside className="flex w-72 shrink-0 flex-col border-l border-border bg-card/40">
       <div className="flex items-center justify-between border-b border-border p-3">
-        <p className="text-sm font-semibold capitalize">{d.kind} node</p>
-        <Button variant="ghost" size="icon" title="Delete node" onClick={onDelete}>
+        <p className="text-sm font-semibold capitalize">
+          {d.kind} node
+          {selectedCount > 1 && (
+            <span className="ml-1 font-normal text-muted-foreground">
+              (+{selectedCount - 1} selected)
+            </span>
+          )}
+        </p>
+        <Button variant="ghost" size="icon" title={deleteLabel} onClick={onDelete}>
           <Trash2 className="size-4" />
         </Button>
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto p-3">
-        <Field label={mode === "pipeline" ? "Step name (id)" : "Name"}>
+        <Field label="Step name (id)">
           <Input value={d.label} onChange={(e) => onChange({ label: e.target.value })} />
         </Field>
         {d.kind === "agent" && (
@@ -95,7 +202,7 @@ function Inspector({
                 ))}
               </Select>
             </Field>
-            <Field label={mode === "pipeline" ? "Task prompt ({{input}} and {{var}} interpolate)" : "Task prompt"}>
+            <Field label="Task prompt ({{input}} and {{var}} interpolate)">
               <Textarea
                 value={d.task ?? ""}
                 onChange={(e) => onChange({ task: e.target.value })}
@@ -103,14 +210,14 @@ function Inspector({
                 placeholder="What should this agent do?"
               />
             </Field>
+            <AttachedTools tools={d.tools ?? []} available={tools} onChange={onChange} />
           </>
         )}
         {d.kind === "tool" && (
           <>
             <Field label="Tool">
-              <Select value={d.tool ?? ""} onChange={(e) => onChange({ tool: e.target.value, rawType: undefined })}>
+              <Select value={d.tool ?? ""} onChange={(e) => onChange({ tool: e.target.value })}>
                 <option value="">Pick a tool…</option>
-                {d.rawType && <option value={d.rawType}>{d.rawType} (current)</option>}
                 {tools.map((t) => (
                   <option key={t} value={t}>
                     {t}
@@ -129,116 +236,107 @@ function Inspector({
             </Field>
           </>
         )}
-        {mode === "pipeline" && !structural && (
-          <>
-            <Field label="Output variable">
-              <Input
-                value={d.outputVar ?? ""}
-                onChange={(e) => onChange({ outputVar: e.target.value })}
-                placeholder="defaults to <id>_output"
-                className="font-mono"
-              />
-            </Field>
-            <Field label="On failure">
-              <Select
-                value={d.onFailure ?? "fail"}
-                onChange={(e) => onChange({ onFailure: e.target.value as StepData["onFailure"] })}
-              >
-                <option value="fail">Fail the pipeline</option>
-                <option value="skip">Skip and continue</option>
-                <option value="use_default">Use a default value</option>
-              </Select>
-            </Field>
-            {d.onFailure === "use_default" && (
-              <Field label="Default value">
-                <Input
-                  value={d.defaultValue ?? ""}
-                  onChange={(e) => onChange({ defaultValue: e.target.value })}
-                />
-              </Field>
-            )}
-          </>
-        )}
-        {mode === "workflow" && !structural && (
-          <>
-            <Field label="Notes">
-              <Textarea
-                value={d.notes ?? ""}
-                onChange={(e) => onChange({ notes: e.target.value })}
-                className="min-h-16 text-xs"
-              />
-            </Field>
-            <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={d.disabled ?? false}
-                onChange={(e) => onChange({ disabled: e.target.checked })}
-                className="accent-[hsl(var(--primary))]"
-              />
-              Disabled (skipped at run time)
-            </label>
-          </>
+        <Field label="Output variable">
+          <Input
+            value={d.outputVar ?? ""}
+            onChange={(e) => onChange({ outputVar: e.target.value })}
+            placeholder="defaults to <id>_output"
+            className="font-mono"
+          />
+        </Field>
+        <Field label="On failure">
+          <Select
+            value={d.onFailure ?? "fail"}
+            onChange={(e) => onChange({ onFailure: e.target.value as StepData["onFailure"] })}
+          >
+            <option value="fail">Fail the pipeline</option>
+            <option value="skip">Skip and continue</option>
+            <option value="use_default">Use a default value</option>
+          </Select>
+        </Field>
+        {d.onFailure === "use_default" && (
+          <Field label="Default value">
+            <Input
+              value={d.defaultValue ?? ""}
+              onChange={(e) => onChange({ defaultValue: e.target.value })}
+            />
+          </Field>
         )}
       </div>
     </aside>
   );
 }
 
-function BuilderCanvas({
-  mode,
-  editKey,
-}: {
-  mode: Mode;
-  /** Workflow id or pipeline name when editing; undefined when creating. */
-  editKey?: string;
-}) {
+function BuilderCanvas({ editKey }: { editKey?: string }) {
   const navigate = useNavigate();
   const resolved = useTheme((s) => s.resolved);
   const agents = useAgents();
   const tools = useTools();
-  const saveWorkflow = useSaveWorkflow();
   const savePipeline = useSavePipeline();
   const { screenToFlowPosition } = useReactFlow();
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<BuilderNode>(
-    mode === "workflow" && !editKey
-      ? [
-          makeNode({ kind: "start", label: "Start" }, { x: 60, y: 140 }),
-          makeNode({ kind: "end", label: "End" }, { x: 620, y: 140 }),
-        ]
-      : [],
-  );
+  const [nodes, setNodes, onNodesChange] = useNodesState<BuilderNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [output, setOutput] = useState("");
   const [loading, setLoading] = useState(Boolean(editKey));
   const originalDoc = useRef<Record<string, unknown>>({});
-  // Typed as string: the list routes are registered dynamically from NAV_ITEMS,
-  // so they aren't part of the router's literal route union.
-  const listPath: string = mode === "workflow" ? "/workflows" : "/pipelines";
+
+  // Unsaved-work guard. `baseline` is the document as loaded (or as last saved);
+  // anything else on the canvas is unsaved work, and the route is remounted on
+  // every entry (`key={params.name ?? "new"}`), so a silent navigation away is
+  // unrecoverable.
+  const [baseline, setBaseline] = useState(EMPTY_SNAPSHOT);
+  const current = useMemo(
+    () => snapshot({ name, description, output, nodes, edges }),
+    [name, description, output, nodes, edges],
+  );
+  const dirty = current !== baseline;
+  useDirtyGuard(dirty);
+
+  // Set once the save succeeds. `useBlocker` only tears its history block down
+  // in an effect, so navigating in the same tick that clears the baseline would
+  // still prompt "discard your changes?" — wait for the render where it is gone.
+  const [leaving, setLeaving] = useState(false);
+  useEffect(() => {
+    if (!leaving) return;
+    // The baseline and this flag are set together, so this runs on the render
+    // right after the save. Still dirty means the canvas was edited while the
+    // request was in flight: stay put, and disarm rather than leaving the flag
+    // latched to fire on whichever later edit happens to match the baseline.
+    if (dirty) setLeaving(false);
+    else navigate({ to: LIST_PATH });
+  }, [leaving, dirty, navigate]);
 
   // Seed the canvas from the stored definition when editing.
   useEffect(() => {
     if (!editKey) return;
-    const load = mode === "workflow" ? fetchWorkflowDefinition : fetchPipelineDefinition;
-    load(editKey)
+    fetchPipelineDefinition(editKey)
       .then((doc) => {
         originalDoc.current = doc;
-        const graph = mode === "workflow" ? workflowToGraph(doc) : pipelineToGraph(doc);
-        setNodes(graph.nodes);
-        setEdges(graph.edges);
-        setName(typeof doc.name === "string" ? doc.name : editKey);
-        setDescription(typeof doc.description === "string" ? doc.description : "");
-        setOutput(typeof doc.output === "string" ? doc.output : "");
+        const graph = pipelineToGraph(doc);
+        const loaded: Draft = {
+          name: typeof doc.name === "string" ? doc.name : editKey,
+          description: typeof doc.description === "string" ? doc.description : "",
+          output: typeof doc.output === "string" ? doc.output : "",
+          nodes: graph.nodes,
+          edges: graph.edges,
+        };
+        setNodes(loaded.nodes);
+        setEdges(loaded.edges);
+        setName(loaded.name);
+        setDescription(loaded.description);
+        setOutput(loaded.output);
+        setBaseline(snapshot(loaded));
       })
       .catch((err) => {
         toastError(err);
-        navigate({ to: listPath });
+        navigate({ to: LIST_PATH });
       })
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editKey, mode]);
+  }, [editKey]);
 
   const onConnect = useCallback(
     (conn: Connection) => setEdges((eds) => addEdge(conn, eds)),
@@ -258,41 +356,47 @@ function BuilderCanvas({
       const raw = e.dataTransfer.getData(DND_TYPE);
       if (!raw) return;
       e.preventDefault();
-      const data = JSON.parse(raw) as StepData;
+      // A throw here escapes the React event handler up to the error boundary,
+      // which unmounts the canvas and loses the whole graph — so a malformed
+      // payload has to be handled, not trusted.
+      let data: unknown;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        toast.error("Could not read the dropped item.");
+        return;
+      }
+      const step = data as StepData;
+      if (!step || !isStepKind(step.kind)) {
+        toast.error("That item can't be dropped on the canvas.");
+        return;
+      }
       const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      setNodes((ns) => [...ns, makeNode(data, pos)]);
+      setNodes((ns) => [...ns, makeNode(step, pos)]);
     },
     [screenToFlowPosition, setNodes],
   );
 
-  const palette = useMemo(() => {
-    const agentItems: PaletteItem[] = (agents.data ?? []).map((a) => ({
-      label: a.name,
-      sub: a.model,
-      data: { kind: "agent", label: a.name, agent: a.name, task: "" },
-    }));
-    const toolItems: PaletteItem[] = (tools.data ?? []).map((t) => ({
-      label: t.name,
-      sub: t.description?.slice(0, 60),
-      data: { kind: "tool", label: t.name, tool: t.name, input: "" },
-    }));
-    const groups = [
-      { label: "Agents", items: agentItems },
-      { label: "Tools", items: toolItems },
-    ];
-    if (mode === "workflow") {
-      groups.unshift({
-        label: "Structure",
-        items: [
-          { label: "Start", data: { kind: "start", label: "Start" } },
-          { label: "End", data: { kind: "end", label: "End" } },
-        ],
-      });
-    }
-    return groups;
-  }, [agents.data, tools.data, mode]);
+  // Pipelines attach tools to an agent node (see AttachedTools) rather than
+  // dropping them on the canvas, so the palette offers agents only.
+  const palette = useMemo(
+    () => [
+      {
+        label: "Agents",
+        items: (agents.data ?? []).map(
+          (a): PaletteItem => ({
+            label: a.name,
+            sub: a.model,
+            data: { kind: "agent", label: a.name, agent: a.name, task: "" },
+          }),
+        ),
+      },
+    ],
+    [agents.data],
+  );
 
-  const selected = nodes.find((n) => n.selected);
+  const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes]);
+  const selected = selectedNodes[0];
 
   const updateSelected = useCallback(
     (patch: Partial<StepData>) => {
@@ -304,56 +408,89 @@ function BuilderCanvas({
     [selected, setNodes],
   );
 
+  // Matches the Delete key, which React Flow applies to the whole selection —
+  // the inspector button used to silently drop only the first selected node.
   const deleteSelected = useCallback(() => {
-    if (!selected) return;
-    setNodes((ns) => ns.filter((n) => n.id !== selected.id));
-    setEdges((es) => es.filter((e) => e.source !== selected.id && e.target !== selected.id));
-  }, [selected, setNodes, setEdges]);
+    const ids = new Set(selectedNodes.map((n) => n.id));
+    if (ids.size === 0) return;
+    setNodes((ns) => ns.filter((n) => !ids.has(n.id)));
+    setEdges((es) => es.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
+  }, [selectedNodes, setNodes, setEdges]);
 
   async function onSave() {
     const trimmed = name.trim();
     if (!trimmed) {
-      toast.error(`Give the ${mode} a name first.`);
+      toast.error("Give the pipeline a name first.");
       return;
     }
+    // Snapshot the document once, up front. Two awaits sit between here and the
+    // baseline assignment (the save itself, and the confirm on a 409), so
+    // reading `nodes`/`edges` again down there can baseline a *different* draft
+    // than the one that was sent: `dirty` never goes false, the effect above
+    // never navigates, and `leaving` stays latched until some later edit
+    // incidentally matches the baseline — at which point it navigates away
+    // mid-edit.
+    const draft: Draft = { name: trimmed, description, output, nodes, edges };
     try {
-      if (mode === "workflow") {
-        const definition = {
-          ...originalDoc.current,
-          ...graphToWorkflow({ id: editKey, name: trimmed, description, nodes, edges }),
-        };
-        await saveWorkflow.mutateAsync({ id: editKey, name: trimmed, definition });
-      } else {
-        const definition: Record<string, unknown> = {
-          ...originalDoc.current,
-          ...graphToPipeline({ name: trimmed, description, output, nodes, edges }),
-        };
-        if (!output.trim()) delete definition.output;
-        if (!description.trim()) delete definition.description;
-        await savePipeline.mutateAsync({ name: trimmed, definition });
+      const definition: Record<string, unknown> = {
+        ...originalDoc.current,
+        ...graphToPipeline({
+          ...draft,
+          // Keep whatever the stored document declared; the spread above would
+          // otherwise let a hardcoded 1.0.0 downgrade a 2.3.0 pipeline.
+          version: typeof originalDoc.current.version === "string"
+            ? originalDoc.current.version
+            : undefined,
+        }),
+      };
+      if (!draft.output.trim()) delete definition.output;
+      if (!draft.description.trim()) delete definition.description;
+      // Editing an existing pipeline is an overwrite by definition. Creating one
+      // is not: the API answers a name collision with 409 rather than silently
+      // replacing a production definition, so ask before insisting.
+      try {
+        await savePipeline.mutateAsync({
+          name: trimmed,
+          definition,
+          overwrite: Boolean(editKey),
+        });
+      } catch (err) {
+        if (!(err instanceof ApiError && err.status === 409)) throw err;
+        const replace = await confirm({
+          title: `Replace the pipeline "${trimmed}"?`,
+          description:
+            "A pipeline with that name already exists. Saving replaces its stored definition — there is no undo.",
+          confirmLabel: "Replace",
+          destructive: true,
+        });
+        if (!replace) return;
+        await savePipeline.mutateAsync({ name: trimmed, definition, overwrite: true });
       }
-      toast.success(editKey ? "Saved" : `${mode === "workflow" ? "Workflow" : "Pipeline"} created`);
-      navigate({ to: listPath });
+      toast.success(editKey ? "Saved" : "Pipeline created");
+      // Clear the dirty guard before leaving, then let the effect above navigate.
+      setName(trimmed);
+      setBaseline(snapshot(draft));
+      setLeaving(true);
     } catch (err) {
       toastError(err);
     }
   }
 
-  const saving = saveWorkflow.isPending || savePipeline.isPending;
+  const saving = savePipeline.isPending;
 
   return (
     <div className="-mx-6 flex h-[calc(100vh-3.5rem)] flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
         <Button asChild variant="ghost" size="icon" title="Back">
-          <Link to={listPath}>
+          <Link to={LIST_PATH}>
             <ArrowLeft />
           </Link>
         </Button>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={mode === "workflow" ? "Workflow name" : "Pipeline name"}
-          disabled={mode === "pipeline" && Boolean(editKey)}
+          placeholder="Pipeline name"
+          disabled={Boolean(editKey)}
           className="h-8 w-56 font-medium"
         />
         <Input
@@ -362,19 +499,18 @@ function BuilderCanvas({
           placeholder="Description (optional)"
           className="h-8 w-72"
         />
-        {mode === "pipeline" && (
-          <Input
-            value={output}
-            onChange={(e) => setOutput(e.target.value)}
-            placeholder="Output var (optional)"
-            title="Which step output_var is the pipeline's final result"
-            className="h-8 w-44 font-mono text-xs"
-          />
-        )}
+        <Input
+          value={output}
+          onChange={(e) => setOutput(e.target.value)}
+          placeholder="Output var (optional)"
+          title="Which step output_var is the pipeline's final result"
+          className="h-8 w-44 font-mono text-xs"
+        />
         <div className="ml-auto flex items-center gap-2">
           <span className="font-mono text-[11px] text-muted-foreground">
             {nodes.length} node{nodes.length === 1 ? "" : "s"} · {edges.length} edge
             {edges.length === 1 ? "" : "s"}
+            {dirty && " · unsaved"}
           </span>
           <Button size="sm" onClick={onSave} disabled={saving || loading}>
             {saving ? <Loader2 className="animate-spin" /> : <Save />}
@@ -418,15 +554,15 @@ function BuilderCanvas({
           {!loading && nodes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <p className="rounded-lg border border-dashed border-border px-6 py-4 text-sm text-muted-foreground">
-                Drag agents and tools from the palette to build your {mode}.
+                Drag agents from the palette, then attach tools to a node.
               </p>
             </div>
           )}
         </div>
         {selected && (
           <Inspector
-            mode={mode}
             node={selected}
+            selectedCount={selectedNodes.length}
             agents={(agents.data ?? []).map((a) => a.name)}
             tools={(tools.data ?? []).map((t) => t.name)}
             onChange={updateSelected}
@@ -438,21 +574,12 @@ function BuilderCanvas({
   );
 }
 
-function BuilderPage({ mode, editKey }: { mode: Mode; editKey?: string }) {
-  return (
-    <ReactFlowProvider>
-      <BuilderCanvas mode={mode} editKey={editKey} />
-    </ReactFlowProvider>
-  );
-}
-
-export function WorkflowBuilderPage() {
-  const params = useParams({ strict: false }) as { id?: string };
-  // Key forces a fresh canvas when switching between /new and /$id/edit.
-  return <BuilderPage key={params.id ?? "new"} mode="workflow" editKey={params.id} />;
-}
-
 export function PipelineBuilderPage() {
   const params = useParams({ strict: false }) as { name?: string };
-  return <BuilderPage key={params.name ?? "new"} mode="pipeline" editKey={params.name} />;
+  // Key forces a fresh canvas when switching between /new and /$name/edit.
+  return (
+    <ReactFlowProvider key={params.name ?? "new"}>
+      <BuilderCanvas editKey={params.name} />
+    </ReactFlowProvider>
+  );
 }

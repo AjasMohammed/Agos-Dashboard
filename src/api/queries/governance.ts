@@ -6,6 +6,7 @@ import type {
   ProposalStats,
   Role,
   AuditEntrySummary,
+  AuditEntryDetail,
   ApprovalPolicy,
   AddApprovalPolicyBody,
 } from "../models";
@@ -13,10 +14,15 @@ import type {
 // ── Escalations ─────────────────────────────────────────────────────────────
 export const escalationKeys = { all: ["escalations"] as const };
 
-export function useEscalations() {
+export function useEscalations(opts?: { enabled?: boolean; refetchInterval?: number | false }) {
   return useQuery({
     queryKey: escalationKeys.all,
     queryFn: async () => unwrap<Escalation[]>(await client.GET("/api/v1/escalations")),
+    // The kernel auto-denies a pending escalation after 5 min, so a queue left
+    // open on screen has to refresh itself — otherwise the operator approves a
+    // row the kernel already denied. `opts` may still override.
+    refetchInterval: 5000,
+    ...opts,
   });
 }
 
@@ -128,12 +134,47 @@ export function useDeleteRole() {
 }
 
 // ── Audit ───────────────────────────────────────────────────────────────────
+// The log tail and a single trace lookup are separate namespaces: neither may
+// prefix the other, so refreshing one can never cancel the other's fetch.
+export const auditKeys = {
+  logs: ["audit", "logs"] as const,
+  trace: (traceId: string) => ["audit", "trace", traceId] as const,
+};
 export function useAuditLogs() {
   return useQuery({
-    queryKey: ["audit", "logs"],
+    queryKey: auditKeys.logs,
     queryFn: async () =>
       unwrap<AuditEntrySummary[]>(
         await client.GET("/api/v1/audit/logs", { params: { query: { limit: 100 } } }),
       ),
+  });
+}
+
+// ── Audit verify + trace lookup ─────────────────────────────────────────────
+export interface AuditVerifyResult {
+  valid?: boolean;
+  entries_checked?: number;
+  /** Id gaps left by rotation/cleanup; each starts a fresh chain segment. */
+  gaps?: number;
+  first_invalid_seq?: number | null;
+}
+export function useVerifyAudit() {
+  return useMutation({
+    mutationFn: async () =>
+      unwrap<unknown>(await client.GET("/api/v1/audit/verify")) as AuditVerifyResult,
+  });
+}
+export function useAuditTrace(traceId: string) {
+  const trimmed = traceId.trim();
+  return useQuery({
+    queryKey: auditKeys.trace(trimmed),
+    queryFn: async () =>
+      unwrap<AuditEntryDetail>(
+        await client.GET("/api/v1/audit/logs/{trace_id}", {
+          params: { path: { trace_id: trimmed } },
+        }),
+      ),
+    enabled: trimmed.length > 0,
+    retry: false,
   });
 }

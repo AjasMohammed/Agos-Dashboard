@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
 import { AnimatedNumber, Stagger, StaggerItem } from "@/components/motion";
-import { EventLogItem } from "@/components/event-log";
+import { AuditRows } from "./audit-rows";
 
 function formatUptime(secs: number): string {
   if (secs < 60) return `${secs}s`;
@@ -62,11 +62,11 @@ export function DashboardPage() {
     <div>
       <PageHeader
         title="Dashboard"
-        description="Live overview of your AgentOS instance."
+        description="What your assistants are doing right now."
         actions={
           <>
             <Button asChild variant="outline">
-              <Link to="/agents">Connect agent</Link>
+              <Link to="/agents">Add assistant</Link>
             </Button>
             <Button asChild>
               <Link to="/tasks">New task</Link>
@@ -163,11 +163,7 @@ export function DashboardPage() {
                   {d.recent_audit.length === 0 ? (
                     <EmptyState icon={Activity} title="No recent activity" />
                   ) : (
-                    <div className="divide-y divide-border">
-                      {d.recent_audit.slice(0, 12).map((e, i) => (
-                        <EventLogItem key={i} entry={e} />
-                      ))}
-                    </div>
+                    <AuditRows entries={d.recent_audit.slice(0, 12)} />
                   )}
                 </CardContent>
               </Card>

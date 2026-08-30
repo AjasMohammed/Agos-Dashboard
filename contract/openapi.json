@@ -304,7 +304,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Agent ID (UUID)",
+            "description": "Agent name or ID (UUID)",
             "required": true,
             "schema": {
               "type": "string"
@@ -372,7 +372,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Agent ID (UUID)",
+            "description": "Agent name or ID (UUID)",
             "required": true,
             "schema": {
               "type": "string"
@@ -4388,6 +4388,40 @@
             "bearer_auth": []
           }
         ]
+      },
+      "delete": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "`DELETE /api/v1/notifications` — Clear every notification (live questions survive).",
+        "operationId": "notifications_clear_all",
+        "responses": {
+          "200": {
+            "description": "Notifications cleared; `deleted` = row count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Value"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
       }
     },
     "/api/v1/notifications/read": {
@@ -4400,6 +4434,42 @@
         "responses": {
           "200": {
             "description": "Read notifications cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Value"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/read-all": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "`POST /api/v1/notifications/read-all` — Mark every notification as read.",
+        "operationId": "notifications_mark_all_read",
+        "responses": {
+          "200": {
+            "description": "Notifications marked read; `updated` = row count",
             "content": {
               "application/json": {
                 "schema": {
@@ -4732,6 +4802,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A pipeline with this name exists (resend with `overwrite`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4781,6 +4861,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A pipeline with the imported name already exists",
             "content": {
               "application/json": {
                 "schema": {
@@ -7422,6 +7512,71 @@
         ]
       }
     },
+    "/api/v1/webhooks/incoming/{endpoint_id}": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "`POST /api/v1/webhooks/incoming/{endpoint_id}` — Provider webhook ingress.",
+        "description": "Unauthenticated (external services cannot carry a bearer token); the\nper-endpoint secret and provider signature are the credential. Returns as\nsoon as the event is enqueued for debounced delivery to the owning agent.",
+        "operationId": "webhooks_incoming",
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "description": "Webhook endpoint id (UUID)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Provider payload (any content type; non-JSON bodies are wrapped as `{\"_raw\": ...}`)",
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Event accepted"
+          },
+          "401": {
+            "description": "Invalid signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inactive endpoint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Endpoint rate-limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/webhooks/telegram/{channel_id}": {
       "post": {
         "tags": [
@@ -7952,11 +8107,22 @@
               "null"
             ]
           },
+          "description": {
+            "type": "string",
+            "description": "Current profile description (empty when unset). Exposed so an editor can\nprefill instead of submitting blanks over the stored values."
+          },
           "permissions": {
             "type": "array",
             "items": {
               "type": "string"
             }
+          },
+          "provider_healthy": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Result of a live health check against the agent's LLM provider\n(`None` when no adapter is attached or the check timed out)."
           },
           "recent_tasks": {
             "type": "array",
@@ -7966,6 +8132,17 @@
           },
           "summary": {
             "$ref": "#/components/schemas/ApiAgentSummary"
+          },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current custom system prompt, when one is set."
+          },
+          "thinking_level": {
+            "type": "string",
+            "description": "Current default thinking level, lowercase (`off`/`low`/`medium`/`high`/`max`)."
           }
         }
       },
@@ -8125,6 +8302,13 @@
           "last_active"
         ],
         "properties": {
+          "active_agent_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default agent for inbound chat on this channel."
+          },
           "connected_at": {
             "type": "string",
             "format": "date-time",
@@ -8420,6 +8604,8 @@
           "id",
           "name",
           "connected",
+          "registered",
+          "oauth_available",
           "scopes"
         ],
         "properties": {
@@ -8443,12 +8629,20 @@
             "type": "string",
             "description": "Human-readable name."
           },
+          "oauth_available": {
+            "type": "boolean",
+            "description": "An OAuth provider block exists in `oauth_providers.toml`, so \"Connect\" works."
+          },
           "provider": {
             "type": [
               "string",
               "null"
             ],
             "description": "OAuth provider name (from the stored credential), if connected."
+          },
+          "registered": {
+            "type": "boolean",
+            "description": "A connector manifest is registered (tools are callable once connected)."
           },
           "scopes": {
             "type": "array",
@@ -8467,12 +8661,25 @@
           "topic",
           "participants",
           "status",
+          "max_turns",
+          "created_at",
+          "updated_at",
           "messages"
         ],
         "properties": {
+          "created_at": {
+            "type": "string",
+            "description": "RFC3339 creation timestamp."
+          },
           "id": {
             "type": "string",
             "description": "Conversation id (UUID)."
+          },
+          "max_turns": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Turn ceiling the orchestration loop runs to (clamped 2..=50 at creation).",
+            "minimum": 0
           },
           "messages": {
             "type": "array",
@@ -8495,6 +8702,10 @@
           "topic": {
             "type": "string",
             "description": "Conversation topic / seed prompt."
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "RFC3339 last-updated timestamp."
           }
         }
       },
@@ -9095,7 +9306,8 @@
           "channels",
           "tools",
           "permissions",
-          "memory_backend"
+          "memory_backend",
+          "user_installed"
         ],
         "properties": {
           "author": {
@@ -9146,6 +9358,9 @@
           "trust_tier": {
             "type": "string"
           },
+          "user_installed": {
+            "type": "boolean"
+          },
           "version": {
             "type": "string"
           }
@@ -9162,7 +9377,8 @@
           "trust_tier",
           "status",
           "channels",
-          "tools"
+          "tools",
+          "user_installed"
         ],
         "properties": {
           "blocked_reason": {
@@ -9205,6 +9421,10 @@
           "trust_tier": {
             "type": "string",
             "description": "Trust tier: `core` | `verified` | `community` | `blocked`."
+          },
+          "user_installed": {
+            "type": "boolean",
+            "description": "Manifest lives under `plugins/user/` (installed by an operator; removable)."
           },
           "version": {
             "type": "string",
@@ -9629,11 +9849,25 @@
             "type": "string",
             "format": "date-time"
           },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Failure reason when `status == \"failed\"`."
+          },
           "id": {
             "type": "string"
           },
           "prompt": {
             "type": "string"
+          },
+          "result": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The agent's final answer when `status == \"complete\"`."
           },
           "status": {
             "type": "string"
@@ -9673,6 +9907,13 @@
             "type": "string",
             "format": "date-time"
           },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Failure reason when `status == \"failed\"`."
+          },
           "id": {
             "type": "string"
           },
@@ -9707,6 +9948,20 @@
           },
           "name": {
             "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Permissions the tool requires (from `[capabilities_required]`)."
+          },
+          "risk_class": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_scoped`, `exec_capable`, `control_plane`, `interactive`)."
           },
           "status": {
             "type": "string"
@@ -10138,7 +10393,7 @@
       },
       "CreateChatSessionRequest": {
         "type": "object",
-        "description": "Request body for `POST /api/v1/chat/sessions`.\n\n`first_message` is optional in the API contract, but the backing store only\nexposes `create_session_with_first_message`. When omitted, the session is\ncreated with an empty placeholder first message (see handler/kernel impl).",
+        "description": "Request body for `POST /api/v1/chat/sessions`.\n\n`first_message` is optional: omit it (or send blank) to open an empty\nsession, which is what a client that creates the session on the first send\nwants — the send/stream endpoints persist the user turn themselves.",
         "required": [
           "agent_name"
         ],
@@ -10152,7 +10407,7 @@
               "string",
               "null"
             ],
-            "description": "Optional first user message. If omitted, an empty placeholder is stored."
+            "description": "Optional first user message. Missing or blank means an empty session."
           },
           "title": {
             "type": [
@@ -10550,11 +10805,22 @@
                   "null"
                 ]
               },
+              "description": {
+                "type": "string",
+                "description": "Current profile description (empty when unset). Exposed so an editor can\nprefill instead of submitting blanks over the stored values."
+              },
               "permissions": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
+              },
+              "provider_healthy": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Result of a live health check against the agent's LLM provider\n(`None` when no adapter is attached or the check timed out)."
               },
               "recent_tasks": {
                 "type": "array",
@@ -10564,6 +10830,17 @@
               },
               "summary": {
                 "$ref": "#/components/schemas/ApiAgentSummary"
+              },
+              "system_prompt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Current custom system prompt, when one is set."
+              },
+              "thinking_level": {
+                "type": "string",
+                "description": "Current default thinking level, lowercase (`off`/`low`/`medium`/`high`/`max`)."
               }
             }
           }
@@ -10759,6 +11036,13 @@
               "last_active"
             ],
             "properties": {
+              "active_agent_name": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Default agent for inbound chat on this channel."
+              },
               "connected_at": {
                 "type": "string",
                 "format": "date-time",
@@ -11019,12 +11303,25 @@
               "topic",
               "participants",
               "status",
+              "max_turns",
+              "created_at",
+              "updated_at",
               "messages"
             ],
             "properties": {
+              "created_at": {
+                "type": "string",
+                "description": "RFC3339 creation timestamp."
+              },
               "id": {
                 "type": "string",
                 "description": "Conversation id (UUID)."
+              },
+              "max_turns": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Turn ceiling the orchestration loop runs to (clamped 2..=50 at creation).",
+                "minimum": 0
               },
               "messages": {
                 "type": "array",
@@ -11047,6 +11344,10 @@
               "topic": {
                 "type": "string",
                 "description": "Conversation topic / seed prompt."
+              },
+              "updated_at": {
+                "type": "string",
+                "description": "RFC3339 last-updated timestamp."
               }
             }
           }
@@ -11319,7 +11620,8 @@
               "channels",
               "tools",
               "permissions",
-              "memory_backend"
+              "memory_backend",
+              "user_installed"
             ],
             "properties": {
               "author": {
@@ -11369,6 +11671,9 @@
               },
               "trust_tier": {
                 "type": "string"
+              },
+              "user_installed": {
+                "type": "boolean"
               },
               "version": {
                 "type": "string"
@@ -11710,11 +12015,25 @@
                 "type": "string",
                 "format": "date-time"
               },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Failure reason when `status == \"failed\"`."
+              },
               "id": {
                 "type": "string"
               },
               "prompt": {
                 "type": "string"
+              },
+              "result": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The agent's final answer when `status == \"complete\"`."
               },
               "status": {
                 "type": "string"
@@ -11760,6 +12079,20 @@
               },
               "name": {
                 "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Permissions the tool requires (from `[capabilities_required]`)."
+              },
+              "risk_class": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_scoped`, `exec_capable`, `control_plane`, `interactive`)."
               },
               "status": {
                 "type": "string"
@@ -12565,6 +12898,13 @@
                 "last_active"
               ],
               "properties": {
+                "active_agent_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Default agent for inbound chat on this channel."
+                },
                 "connected_at": {
                   "type": "string",
                   "format": "date-time",
@@ -12680,6 +13020,8 @@
                 "id",
                 "name",
                 "connected",
+                "registered",
+                "oauth_available",
                 "scopes"
               ],
               "properties": {
@@ -12703,12 +13045,20 @@
                   "type": "string",
                   "description": "Human-readable name."
                 },
+                "oauth_available": {
+                  "type": "boolean",
+                  "description": "An OAuth provider block exists in `oauth_providers.toml`, so \"Connect\" works."
+                },
                 "provider": {
                   "type": [
                     "string",
                     "null"
                   ],
                   "description": "OAuth provider name (from the stored credential), if connected."
+                },
+                "registered": {
+                  "type": "boolean",
+                  "description": "A connector manifest is registered (tools are callable once connected)."
                 },
                 "scopes": {
                   "type": "array",
@@ -13214,7 +13564,8 @@
                 "trust_tier",
                 "status",
                 "channels",
-                "tools"
+                "tools",
+                "user_installed"
               ],
               "properties": {
                 "blocked_reason": {
@@ -13257,6 +13608,10 @@
                 "trust_tier": {
                   "type": "string",
                   "description": "Trust tier: `core` | `verified` | `community` | `blocked`."
+                },
+                "user_installed": {
+                  "type": "boolean",
+                  "description": "Manifest lives under `plugins/user/` (installed by an operator; removable)."
                 },
                 "version": {
                   "type": "string",
@@ -13591,6 +13946,20 @@
                 "name": {
                   "type": "string"
                 },
+                "permissions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Permissions the tool requires (from `[capabilities_required]`)."
+                },
+                "risk_class": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_scoped`, `exec_capable`, `control_plane`, `interactive`)."
+                },
                 "status": {
                   "type": "string"
                 },
@@ -13906,6 +14275,10 @@
                 "id": {
                   "type": "string"
                 },
+                "needs_response": {
+                  "type": "boolean",
+                  "description": "True for an unanswered `Question` — the agent is blocked on a reply."
+                },
                 "priority": {
                   "type": "string"
                 },
@@ -13914,6 +14287,13 @@
                 },
                 "subject": {
                   "type": "string"
+                },
+                "task_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Task that raised this message (e.g. the per-turn chat task for a\nblocking `ask-user`), if any."
                 },
                 "timestamp": {
                   "type": "string"
@@ -14468,6 +14848,13 @@
                   "type": "string",
                   "format": "date-time"
                 },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Failure reason when `status == \"failed\"`."
+                },
                 "id": {
                   "type": "string"
                 },
@@ -14591,6 +14978,10 @@
           "id": {
             "type": "string"
           },
+          "needs_response": {
+            "type": "boolean",
+            "description": "True for an unanswered `Question` — the agent is blocked on a reply."
+          },
           "priority": {
             "type": "string"
           },
@@ -14599,6 +14990,13 @@
           },
           "subject": {
             "type": "string"
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Task that raised this message (e.g. the per-turn chat task for a\nblocking `ask-user`), if any."
           },
           "timestamp": {
             "type": "string"
@@ -15078,6 +15476,10 @@
           "definition": {},
           "name": {
             "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Replace an existing pipeline of the same name. Without it a name that is\nalready taken is rejected with `409 Conflict` — the store writes\n`INSERT OR REPLACE`, so a \"new\" pipeline would otherwise silently\noverwrite a production definition and report success."
           }
         }
       },
@@ -15274,26 +15676,32 @@
       },
       "UpdateAgentSettingsRequest": {
         "type": "object",
+        "description": "Partial update of an agent's mutable profile settings.\n\nEvery field is optional and **absent means \"leave unchanged\"** — a client that\nonly wants to edit the description must not have to resend the system prompt it\nnever displayed. To *clear* the system prompt, send it as an empty string.",
         "required": [
-          "agent_name",
-          "description",
-          "thinking_level"
+          "agent_name"
         ],
         "properties": {
           "agent_name": {
             "type": "string"
           },
           "description": {
-            "type": "string"
-          },
-          "system_prompt": {
             "type": [
               "string",
               "null"
             ]
           },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`None` leaves the prompt untouched; `Some(\"\")` clears it."
+          },
           "thinking_level": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

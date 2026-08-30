@@ -1,10 +1,41 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      connect-src lists the panel's API/WS origins: :8080 is the real agentos-api
+      (.env.example / .env.development.local) and :4010 the Prism mock
+      (.env.development). Serving the panel against a different API origin means
+      adding it here. 'unsafe-inline' is on style-src only because framer-motion
+      writes inline styles; script-src keeps it too because Vite's dev
+      react-refresh preamble and the pre-paint theme script below are inline —
+      tighten it to a nonce once the panel is served by a backend that can mint
+      one. img-src allows data:/blob: for generated avatars and file previews.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="%CSP_POLICY%"
+    />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgentOS Control Panel</title>
+    <script>
+      // Pre-paint theme: <html class="dark"> used to be hardcoded, so every
+      // light-theme operator got a full dark flash on load. Mirrors
+      // src/app/theme.ts — keep the storage key and the fallback in sync.
+      try {
+        var t = localStorage.getItem("agentos-panel.theme");
+        if (t !== "light" && t !== "dark" && t !== "system") t = "dark";
+        if (
+          t === "dark" ||
+          (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches)
+        ) {
+          document.documentElement.classList.add("dark");
+        }
+      } catch (e) {
+        document.documentElement.classList.add("dark");
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

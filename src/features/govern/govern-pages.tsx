@@ -1,4 +1,8 @@
-import { useMemo, useState, type FormEvent } from "react";
+/* eslint-disable react-refresh/only-export-components --
+   the pure decision helpers below (option classification, bulk split, grant
+   blast radius) are exported so they can be unit-tested without mounting the
+   page; they carry no component state. */
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { ShieldAlert, KeyRound, SlidersHorizontal, ScrollText, Info } from "lucide-react";
 import {
@@ -14,16 +18,26 @@ import {
   useApprovalPolicies,
   useAddApprovalPolicy,
   useRevokeApprovalPolicy,
+  useVerifyAudit,
+  useAuditTrace,
 } from "@/api/queries/governance";
+import {
+  useNotifications,
+  useDismissNotification,
+  useRespondNotification,
+  useClearReadNotifications,
+} from "@/api/queries/notifications";
+import { useAgents } from "@/api/queries/agents";
 import { PageHeader } from "@/components/page-header";
 import { QueryState } from "@/components/query-state";
 import { DataTable, type Column } from "@/components/data-table";
 import { EmptyState } from "@/components/empty-state";
-import { EventLogItem } from "@/components/event-log";
+import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -39,7 +53,31 @@ import { cn } from "@/lib/utils";
 import { confirm } from "@/lib/confirm";
 import { toastError } from "@/lib/errors";
 import { relativeTime } from "@/lib/format";
-import type { Escalation, Role, PrefProposal } from "@/api/models";
+import { agentLabel, useAgentNames } from "@/lib/agent-names";
+import { senderAgentId } from "@/features/activity/activity-feed";
+import { AuditRows } from "@/features/dashboard/audit-rows";
+import type {
+  AddApprovalPolicyBody,
+  ApprovalPolicy,
+  Escalation,
+  NotificationSummary,
+  Role,
+  PrefProposal,
+} from "@/api/models";
+
+/**
+ * Add/remove ids in a per-row in-flight (or selection) `Set`. Rows track their
+ * own pending state because a shared `mutation.isPending` disables *every*
+ * row's button, not just the one that was clicked.
+ */
+function withIds<T>(prev: ReadonlySet<T>, ids: readonly T[], on: boolean): ReadonlySet<T> {
+  const next = new Set(prev);
+  for (const id of ids) {
+    if (on) next.add(id);
+    else next.delete(id);
+  }
+  return next;
+}
 
 // ── Escalations ─────────────────────────────────────────────────────────────
 
@@ -52,25 +90,97 @@ const urgencyRank = (u: string) => {
 
 const escOptions = (e: Escalation) => e.options ?? ["approve", "deny"];
 
+/**
+ * The escalation's OWN spelling of `decision`, or `undefined` when it doesn't
+ * offer it. Matching is case/space-insensitive — an agent that emits
+ * `["Approve", "Deny"]` used to be unresolvable in bulk (every row landed in
+ * `skipped`) while its per-row buttons worked — but the original string is what
+ * comes back, because the kernel matches the option text it handed out.
+ */
+export const matchOption = (e: Escalation, decision: string): string | undefined => {
+  const want = decision.trim().toLowerCase();
+  return escOptions(e).find((o) => o.trim().toLowerCase() === want);
+};
+
+// `Escalation.options` is a free-form `Vec<String>` written by whoever raised the
+// escalation, i.e. agent-controlled text rendered next to agent-controlled
+// `decision_point` / `context_summary`. Only a recognised verb gets a decisive
+// button style; anything unknown falls back to `outline` so an injected option
+// (`["cancel", "wipe-workspace"]`) can never be the visually affirmative choice.
+const NEGATIVE_OPTIONS = new Set(["deny", "reject", "block", "cancel", "abort", "no"]);
+const AFFIRMATIVE_OPTIONS = new Set(["approve", "allow", "accept", "yes", "confirm", "ok"]);
+
+/** "approve" → "Approve": the visible text is also the button's accessible name. */
+export const optionLabel = (opt: string) => {
+  const t = opt.trim();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
+
+export function optionVariant(opt: string): "destructive" | "default" | "outline" {
+  const v = opt.trim().toLowerCase();
+  if (NEGATIVE_OPTIONS.has(v)) return "destructive";
+  return AFFIRMATIVE_OPTIONS.has(v) ? "default" : "outline";
+}
+
+/**
+ * Split the selected escalations into the ones that actually offer `decision`
+ * and the ones that don't. The skipped set must be surfaced and stay selected:
+ * silently resolving 3 of 5 and clearing the selection reads to the operator as
+ * "the other 2 were already gone" while those agents are still blocked.
+ */
+export function splitByOption(
+  items: Escalation[],
+  selected: ReadonlySet<string>,
+  decision: string,
+): { targets: Escalation[]; skipped: Escalation[] } {
+  const chosen = items.filter((e) => selected.has(String(e.id)));
+  return {
+    targets: chosen.filter((e) => matchOption(e, decision) !== undefined),
+    skipped: chosen.filter((e) => matchOption(e, decision) === undefined),
+  };
+}
+
+/**
+ * The one sentence the operator reads before an irreversible N-way decision, so
+ * it has to describe the decision they actually clicked: a single hardcoded
+ * "This authorises N actions" told them the exact inverse on the deny path.
+ * Effect is derived from `optionVariant`, which already classifies the verb.
+ */
+export function bulkEffectCopy(decision: string, count: number): string {
+  const actions = `${count} pending agent action${count === 1 ? "" : "s"}`;
+  const variant = optionVariant(decision);
+  if (variant === "destructive") return `This rejects ${actions} in one go.`;
+  if (variant === "default") return `This authorises ${actions} in one go.`;
+  // Unrecognised (agent-authored) verb — claim neither effect, quote the verb.
+  return `This answers ${actions} with "${decision}" in one go.`;
+}
+
 export function EscalationsPage() {
   const query = useEscalations();
   const resolve = useResolveEscalation();
+  const agentName = useAgentNames();
   // Per-row in-flight set so one decision only disables its own row's buttons
   // (a shared `isPending` froze the whole list); a Set because bulk-resolve
   // fires several mutations concurrently.
   const [acting, setActing] = useState<ReadonlySet<string>>(new Set());
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
-  function setRowActing(ids: string[], on: boolean) {
-    setActing((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) {
-        if (on) next.add(id);
-        else next.delete(id);
-      }
-      return next;
+  // Drop ids the server no longer returns. The kernel auto-denies pending
+  // escalations after 5 minutes, so without this the sticky bar can claim
+  // "3 selected" when only one of those rows still exists.
+  const rows = query.data;
+  useEffect(() => {
+    if (!rows) return;
+    const live = new Set(rows.map((e) => String(e.id)));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next; // same identity ⇒ no re-render loop
     });
-  }
+  }, [rows]);
+
+  const setRowActing = (ids: string[], on: boolean) =>
+    setActing((prev) => withIds(prev, ids, on));
+  const deselect = (ids: string[]) => setSelected((prev) => withIds(prev, ids, false));
 
   async function decide(e: Escalation, decision: string) {
     const id = String(e.id);
@@ -78,35 +188,58 @@ export function EscalationsPage() {
     try {
       await resolve.mutateAsync({ id, decision });
       toast.success(`Resolved: ${decision}`);
+      // Only drop it on success — a rejected mutation must stay in the batch
+      // the operator is about to retry.
+      deselect([id]);
     } catch (err) {
       toastError(err);
     } finally {
       setRowActing([id], false);
-      setSelected((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
     }
   }
 
   /** Resolve every selected escalation that supports `decision`, concurrently. */
   async function bulkDecide(items: Escalation[], decision: string) {
-    const targets = items.filter(
-      (e) => selected.has(String(e.id)) && escOptions(e).includes(decision),
-    );
-    if (targets.length === 0) return;
-    const ids = targets.map((e) => String(e.id));
+    const { targets, skipped } = splitByOption(items, selected, decision);
+    if (targets.length === 0) {
+      toast.warning(`No selected request offers "${decision}" — resolve those individually.`);
+      return;
+    }
+    const plural = targets.length === 1 ? "" : "s";
+    if (
+      !(await confirm({
+        title: `Resolve ${targets.length} request${plural} as "${decision}"?`,
+        description:
+          bulkEffectCopy(decision, targets.length) +
+          (skipped.length > 0
+            ? ` ${skipped.length} selected request${skipped.length === 1 ? " does" : "s do"} not offer "${decision}" and will stay selected, unresolved.`
+            : ""),
+        destructive: optionVariant(decision) === "destructive",
+        confirmLabel: decision,
+      }))
+    )
+      return;
+
+    // Send each row the verb IT offered ("Approve", not our lowercased match).
+    const jobs = targets.map((e) => ({ id: String(e.id), option: matchOption(e, decision) ?? decision }));
+    const ids = jobs.map((j) => j.id);
     setRowActing(ids, true);
     const results = await Promise.allSettled(
-      targets.map((e) => resolve.mutateAsync({ id: String(e.id), decision })),
+      jobs.map((j) => resolve.mutateAsync({ id: j.id, decision: j.option })),
     );
     setRowActing(ids, false);
-    setSelected(new Set());
-    const failed = results.filter((r) => r.status === "rejected").length;
-    const past = decision === "deny" ? "denied" : `${decision}d`;
-    if (failed === 0) toast.success(`${results.length} ${past}`);
-    else toast.warning(`${results.length - failed} ${past}, ${failed} failed`);
+    // allSettled preserves order, so results[i] belongs to ids[i]. Clear only the
+    // ids that actually resolved; failures and skips stay selected for a retry.
+    const resolved = ids.filter((_, i) => results[i].status === "fulfilled");
+    deselect(resolved);
+
+    const failed = ids.length - resolved.length;
+    const parts = [`${resolved.length} resolved as "${decision}"`];
+    if (failed > 0) parts.push(`${failed} failed`);
+    if (skipped.length > 0) parts.push(`${skipped.length} skipped (no "${decision}" option)`);
+    const message = parts.join(" · ");
+    if (failed > 0 || skipped.length > 0) toast.warning(message);
+    else toast.success(message);
   }
 
   function toggleSelected(id: string) {
@@ -120,11 +253,11 @@ export function EscalationsPage() {
 
   return (
     <div>
-      <PageHeader title="Escalations" description="Human-approval requests from agents." />
+      <PageHeader title="Needs your approval" description="Actions an assistant wants to take that need your OK." />
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
-        empty={<EmptyState icon={ShieldAlert} title="No pending escalations" />}
+        empty={<EmptyState icon={ShieldAlert} title="Nothing needs your approval" />}
       >
         {(items) => {
           // Group by urgency, most urgent first, for a scannable review queue.
@@ -190,7 +323,11 @@ export function EscalationsPage() {
                               <p className="font-medium">{e.decision_point}</p>
                               <p className="text-sm text-muted-foreground">{e.context_summary}</p>
                               <p className="mt-1 text-xs text-muted-foreground">
-                                {e.agent_id ? `${e.agent_id} · ` : ""}
+                                {e.agent_id && (
+                                  <span title={e.agent_id}>
+                                    {agentLabel(agentName(e.agent_id), e.agent_id)} ·{" "}
+                                  </span>
+                                )}
                                 {e.blocking ? "blocking · " : ""}
                                 created {relativeTime(e.created_at)} · expires{" "}
                                 {relativeTime(e.expires_at)}
@@ -202,11 +339,11 @@ export function EscalationsPage() {
                               <Button
                                 key={opt}
                                 size="sm"
-                                variant={opt === "deny" ? "destructive" : "default"}
+                                variant={optionVariant(opt)}
                                 disabled={acting.has(String(e.id))}
                                 onClick={() => decide(e, opt)}
                               >
-                                {opt}
+                                {optionLabel(opt)}
                               </Button>
                             ))}
                           </div>
@@ -556,11 +693,11 @@ export function RolesPage() {
   ];
   return (
     <div>
-      <PageHeader title="Roles" description="OS roles and their permission sets." actions={<CreateRoleDialog />} />
+      <PageHeader title="Permission sets" description="Named bundles of permissions you can give an assistant." actions={<CreateRoleDialog />} />
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
-        empty={<EmptyState icon={KeyRound} title="No roles" action={<CreateRoleDialog />} />}
+        empty={<EmptyState icon={KeyRound} title="No permission sets" action={<CreateRoleDialog />} />}
       >
         {(roles) => <DataTable columns={columns} rows={roles} getRowId={(r) => r.name} />}
       </QueryState>
@@ -574,17 +711,26 @@ export function PreferencesPage() {
   const stats = usePrefStats();
   const accept = useReviewProposal("accept");
   const reject = useReviewProposal("reject");
+  // Per-row in-flight set: guards against a double-click firing two POSTs, and
+  // (unlike a shared `isPending`) only disables the row being reviewed.
+  const [reviewing, setReviewing] = useState<ReadonlySet<string>>(new Set());
   async function review(p: PrefProposal, action: "accept" | "reject") {
+    const id = String(p.id);
+    if (reviewing.has(id)) return;
     const m = action === "accept" ? accept : reject;
+    setReviewing((prev) => withIds(prev, [id], true));
     try {
-      await m.mutateAsync(String(p.id));
+      await m.mutateAsync(id);
+      toast.success(action === "accept" ? "Preference kept" : "Proposal dismissed");
     } catch (e) {
       toastError(e);
+    } finally {
+      setReviewing((prev) => withIds(prev, [id], false));
     }
   }
   return (
     <div>
-      <PageHeader title="Preferences" description="Learned user-adaptation proposals to review." />
+      <PageHeader title="What I've learned about you" description="Things assistants noticed about how you work — approve to keep, dismiss to forget." />
       {stats.data && (
         <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           {(
@@ -625,10 +771,19 @@ export function PreferencesPage() {
                   </div>
                   {p.status === "pending" && (
                     <div className="flex gap-2">
-                      <Button size="sm" onClick={() => review(p, "accept")}>
+                      <Button
+                        size="sm"
+                        disabled={reviewing.has(String(p.id))}
+                        onClick={() => review(p, "accept")}
+                      >
                         Accept
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => review(p, "reject")}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={reviewing.has(String(p.id))}
+                        onClick={() => review(p, "reject")}
+                      >
                         Reject
                       </Button>
                     </div>
@@ -644,21 +799,110 @@ export function PreferencesPage() {
 }
 
 // ── Audit ───────────────────────────────────────────────────────────────────
+function VerifyChainButton() {
+  const verify = useVerifyAudit();
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      disabled={verify.isPending}
+      onClick={() =>
+        verify
+          .mutateAsync()
+          .then((r) =>
+            r.valid && r.gaps
+              ? toast.warning(
+                  `Chain intact — ${r.entries_checked ?? "?"} entries verified across ${r.gaps + 1} segments (${r.gaps} gaps from rotation/cleanup; deletions inside a gap are not detectable)`,
+                )
+              : r.valid
+                ? toast.success(`Chain intact — ${r.entries_checked ?? "?"} entries verified`)
+              : toast.error(
+                  `Chain BROKEN at seq ${r.first_invalid_seq ?? "?"} (${r.entries_checked ?? "?"} checked)`,
+                ),
+          )
+          .catch(toastError)
+      }
+    >
+      {verify.isPending ? "Verifying…" : "Verify chain"}
+    </Button>
+  );
+}
+
+function TraceLookup() {
+  const [input, setInput] = useState("");
+  const [traceId, setTraceId] = useState("");
+  const trace = useAuditTrace(traceId);
+  const agentName = useAgentNames();
+  return (
+    <div className="mb-4 space-y-2">
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setTraceId(input);
+        }}
+      >
+        <Input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Look up a trace ID (from a task trace or log line)…"
+          className="max-w-md font-mono text-xs"
+        />
+        <Button type="submit" variant="outline" size="sm" disabled={!input.trim()}>
+          Look up
+        </Button>
+      </form>
+      {traceId.trim() && (
+        <QueryState query={trace}>
+          {(d) => (
+            <Card>
+              <CardContent className="space-y-1 p-4 text-sm">
+                <div className="flex items-center gap-2">
+                  <Badge variant="muted">{d.event_type}</Badge>
+                  <span className="text-xs text-muted-foreground">{relativeTime(d.timestamp)}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {d.agent_id && (
+                    <span title={d.agent_id}>
+                      agent {agentLabel(agentName(d.agent_id), d.agent_id)} ·{" "}
+                    </span>
+                  )}
+                  {d.task_id ? `task ${d.task_id} · ` : ""}
+                  trace <code>{d.trace_id}</code>
+                </p>
+                {d.details && <p className="whitespace-pre-wrap text-sm">{d.details}</p>}
+                {d.metadata != null && (
+                  <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 text-xs">
+                    {JSON.stringify(d.metadata, null, 2)}
+                  </pre>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </QueryState>
+      )}
+    </div>
+  );
+}
+
 export function AuditPage() {
   const query = useAuditLogs();
   return (
     <div>
-      <PageHeader title="Audit" description="Append-only audit trail." />
+      <PageHeader
+        title="Audit"
+        description="Append-only audit trail."
+        actions={<VerifyChainButton />}
+      />
+      <TraceLookup />
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
         empty={<EmptyState icon={ScrollText} title="No audit entries" />}
       >
         {(items) => (
-          <div className="divide-y divide-border rounded-lg border border-border px-3">
-            {items.map((e, i) => (
-              <EventLogItem key={i} entry={e} />
-            ))}
+          <div className="rounded-lg border border-border px-3">
+            <AuditRows entries={items} />
           </div>
         )}
       </QueryState>
@@ -678,31 +922,97 @@ const GRANT_TTLS: { label: string; hours: number | null }[] = [
   { label: "Never", hours: null },
 ];
 
+/** Sentinel for the deliberate "every agent" scope — the API models it as an absent `agent_id`. */
+const ALL_AGENTS = "*";
+
+/**
+ * Blast-radius warning for a standing grant, or `null` when it is narrow enough
+ * to add without a hard stop. An unscoped policy (`agent_id: None`) matches
+ * EVERY agent, present and future (`approval_policy_store.rs`), and one with no
+ * `expires_at` is never swept — either alone lifts the tool from Prompt to Allow
+ * outside the escalation queue, so neither may be a two-click accident.
+ */
+export function grantWarning(tool: string, allAgents: boolean, never: boolean): string | null {
+  if (!allAgents && !never) return null;
+  const who = allAgents ? "every agent, including ones connected later" : "this agent";
+  const when = never ? "forever (nothing expires it)" : "until the grant expires";
+  return `${tool || "This tool"} calls will be auto-approved for ${who}, ${when}, skipping your approval queue entirely.`;
+}
+
+/**
+ * Request body for a standing grant. Extracted from the dialog for one
+ * security-load-bearing line: `ALL_AGENTS` is a UI-only sentinel and the API
+ * models "every agent" as an ABSENT `agent_id`, so `"*"` must never go on the
+ * wire as a literal agent id — a policy stored against the agent named `"*"`
+ * matches nothing, and the operator is told it applies to everyone.
+ */
+export function buildGrantBody(
+  tool: string,
+  scope: string,
+  pathGlob: string,
+  ttlHours: number | null,
+): AddApprovalPolicyBody {
+  return {
+    tool_name: tool.trim(),
+    agent_id: scope === ALL_AGENTS ? undefined : scope,
+    path_glob: pathGlob.trim() || undefined,
+    // Expiry is computed client-side; the API accepts an RFC3339 timestamp.
+    expires_at:
+      ttlHours == null ? undefined : new Date(Date.now() + ttlHours * 3600_000).toISOString(),
+  };
+}
+
 function AddGrantDialog() {
   const [open, setOpen] = useState(false);
   const [tool, setTool] = useState("");
   const [pathGlob, setPathGlob] = useState("");
+  const [agentId, setAgentId] = useState("");
   const [ttlHours, setTtlHours] = useState<number | null>(24);
+  const agents = useAgents();
   const add = useAddApprovalPolicy();
+
+  // No default scope. Falling back to `agents.data[0]` pinned a security grant
+  // to whatever the server happened to list first (the hook does no sorting) —
+  // two clicks, an agent the operator never chose. Submit stays disabled until
+  // the scope is picked explicitly.
+  const scope = agentId;
+  const allAgents = scope === ALL_AGENTS;
+  // A failed agents query is not "no agents connected": saying so, with the
+  // every-agent scope still on offer, nudges the operator to the widest grant
+  // as the only thing they can pick. Say it failed, and offer nothing.
+  const agentPlaceholder = agents.isLoading
+    ? "Loading agents…"
+    : agents.isError
+      ? "Couldn't load agents — reload to retry"
+      : agents.data?.length
+        ? "Select an agent…"
+        : "No agents connected";
+  const warning = grantWarning(tool.trim(), allAgents, ttlHours == null);
 
   function reset() {
     setTool("");
     setPathGlob("");
+    setAgentId("");
     setTtlHours(24);
   }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!tool.trim()) return;
-    // Compute expiry client-side; the API accepts an RFC3339 timestamp.
-    const expires_at =
-      ttlHours == null ? undefined : new Date(Date.now() + ttlHours * 3600_000).toISOString();
+    if (!tool.trim() || !scope) return;
+    if (
+      warning &&
+      !(await confirm({
+        title: allAgents
+          ? `Always allow "${tool.trim()}" for EVERY agent?`
+          : `Always allow "${tool.trim()}" with no expiry?`,
+        description: warning,
+        destructive: true,
+        confirmLabel: "Add grant",
+      }))
+    )
+      return;
     try {
-      await add.mutateAsync({
-        tool_name: tool.trim(),
-        path_glob: pathGlob.trim() || undefined,
-        expires_at,
-      });
+      await add.mutateAsync(buildGrantBody(tool, scope, pathGlob, ttlHours));
       toast.success("Standing grant added");
       reset();
       setOpen(false);
@@ -741,6 +1051,27 @@ function AddGrantDialog() {
               />
             </div>
             <div className="space-y-1">
+              <label className="text-sm font-medium" htmlFor="grant-agent">
+                Applies to
+              </label>
+              <Select
+                id="grant-agent"
+                value={scope}
+                onChange={(e) => setAgentId(e.target.value)}
+                disabled={agents.isLoading || agents.isError}
+              >
+                <option value="">{agentPlaceholder}</option>
+                {(agents.data ?? []).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} ({a.model})
+                  </option>
+                ))}
+                {!agents.isError && (
+                  <option value={ALL_AGENTS}>⚠ All agents — every agent, present and future</option>
+                )}
+              </Select>
+            </div>
+            <div className="space-y-1">
               <label className="text-sm font-medium">Path glob (optional)</label>
               <Input
                 value={pathGlob}
@@ -767,9 +1098,14 @@ function AddGrantDialog() {
                 ))}
               </div>
             </div>
+            {warning && (
+              <p className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+                {warning}
+              </p>
+            )}
           </div>
           <DialogFooter>
-            <Button type="submit" disabled={add.isPending || !tool.trim()}>
+            <Button type="submit" disabled={add.isPending || !tool.trim() || !scope}>
               {add.isPending ? "Adding…" : "Add grant"}
             </Button>
           </DialogFooter>
@@ -783,17 +1119,38 @@ export function StandingGrantsPage() {
   const query = useApprovalPolicies();
   const revoke = useRevokeApprovalPolicy();
   const canWrite = useAuthStore((s) => s.can("approvals:w"));
-  async function onRevoke(id: number) {
-    if (!(await confirm({ title: "Revoke grant?", destructive: true, confirmLabel: "Revoke" }))) return;
-    revoke
-      .mutateAsync(id)
-      .then(() => toast.success("Revoked"))
-      .catch(toastError);
+  const agentName = useAgentNames();
+  // Per-row in-flight set — `revoke.isPending` disabled Revoke on every grant.
+  const [revoking, setRevoking] = useState<ReadonlySet<number>>(new Set());
+  async function onRevoke(p: ApprovalPolicy) {
+    // Name the target: two grants can differ only by `path_glob`, and the list
+    // can reorder between the click and the confirmation.
+    const target = p.path_glob ? `${p.tool_name} (${p.path_glob})` : p.tool_name;
+    if (
+      !(await confirm({
+        title: `Revoke grant for "${target}"?`,
+        // Name the scope: "this agent" is ambiguous next to a truncated id, and
+        // an unscoped grant (no agent_id) is the wider, more dangerous one.
+        description: `Matching calls from ${p.agent_id ? `agent ${agentLabel(agentName(p.agent_id), p.agent_id)}` : "every agent"} will go back to needing your approval.`,
+        destructive: true,
+        confirmLabel: "Revoke",
+      }))
+    )
+      return;
+    setRevoking((prev) => withIds(prev, [p.id], true));
+    try {
+      await revoke.mutateAsync(p.id);
+      toast.success(`Revoked ${p.tool_name}`);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setRevoking((prev) => withIds(prev, [p.id], false));
+    }
   }
   return (
     <div>
       <PageHeader
-        title="Standing grants"
+        title="Always allow"
         description="Persisted allow-always approvals — tool calls matching a grant skip the escalation queue until it expires."
         actions={canWrite ? <AddGrantDialog /> : null}
       />
@@ -813,7 +1170,13 @@ export function StandingGrantsPage() {
                       {p.path_glob ? <span className="text-muted-foreground"> · {p.path_glob}</span> : null}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {p.agent_id ? `agent ${p.agent_id.slice(0, 8)} · ` : "all agents · "}
+                      {p.agent_id ? (
+                        <span title={p.agent_id}>
+                          agent {agentLabel(agentName(p.agent_id), p.agent_id)} ·{" "}
+                        </span>
+                      ) : (
+                        "all agents · "
+                      )}
                       granted {relativeTime(p.granted_at)} by {p.granted_by}
                       {p.expires_at ? ` · expires ${relativeTime(p.expires_at)}` : " · never expires"}
                     </p>
@@ -822,8 +1185,8 @@ export function StandingGrantsPage() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      disabled={revoke.isPending}
-                      onClick={() => onRevoke(p.id)}
+                      disabled={revoking.has(p.id)}
+                      onClick={() => onRevoke(p)}
                     >
                       Revoke
                     </Button>
@@ -834,6 +1197,186 @@ export function StandingGrantsPage() {
           </div>
         )}
       </QueryState>
+    </div>
+  );
+}
+
+// ── Notifications (operator inbox) ───────────────────────────────────────────
+/** Who sent it: the agent's name for `Agent <uuid>` labels, else the label as-is. */
+function useSenderLabel() {
+  const agentName = useAgentNames();
+  return (from: string | null | undefined) => {
+    const id = senderAgentId(from);
+    return id ? agentLabel(agentName(id), id) : from || "";
+  };
+}
+
+function RespondDialog({
+  target,
+  onOpenChange,
+}: {
+  target: NotificationSummary | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [text, setText] = useState("");
+  const respond = useRespondNotification();
+  const sender = useSenderLabel();
+  const id = target?.id ?? null;
+  useEffect(() => setText(""), [id]);
+  return (
+    <Dialog open={id != null} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Respond</DialogTitle>
+          <DialogDescription>
+            {target ? (
+              <>
+                Reply to <span title={senderAgentId(target.from) ?? undefined}>{sender(target.from) || "the sender"}</span>{" "}
+                about “{target.subject}”.
+              </>
+            ) : (
+              "Reply to this notification."
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <Input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Response…"
+          autoFocus
+        />
+        <DialogFooter>
+          <Button
+            disabled={respond.isPending || !text.trim() || !id}
+            onClick={() =>
+              respond
+                .mutateAsync({ id: id!, text: text.trim() })
+                .then(() => {
+                  toast.success("Responded");
+                  onOpenChange(false);
+                })
+                .catch(toastError)
+            }
+          >
+            {respond.isPending ? "Sending…" : "Send"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function NotificationsPage() {
+  const query = useNotifications();
+  const dismiss = useDismissNotification();
+  const clearRead = useClearReadNotifications();
+  const [respondTo, setRespondTo] = useState<NotificationSummary | null>(null);
+  const sender = useSenderLabel();
+  // Per-row in-flight set — `dismiss.isPending` disabled Dismiss on every row.
+  const [dismissing, setDismissing] = useState<ReadonlySet<string>>(new Set());
+
+  async function onDismiss(id: string) {
+    setDismissing((prev) => withIds(prev, [id], true));
+    try {
+      await dismiss.mutateAsync(id);
+      toast.success("Dismissed");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setDismissing((prev) => withIds(prev, [id], false));
+    }
+  }
+
+  async function onClearRead() {
+    // Bulk delete with no undo — confirm before it runs.
+    if (
+      !(await confirm({
+        title: "Clear read notifications?",
+        description: "Deletes every notification you have already read. This cannot be undone.",
+        destructive: true,
+        confirmLabel: "Clear read",
+      }))
+    )
+      return;
+    try {
+      await clearRead.mutateAsync();
+      toast.success("Read notifications cleared");
+    } catch (e) {
+      toastError(e);
+    }
+  }
+
+  return (
+    <div>
+      <PageHeader
+        title="Notifications"
+        description="Operator inbox — agent questions, alerts, and channel messages."
+        actions={
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={clearRead.isPending}
+            onClick={() => void onClearRead()}
+          >
+            Clear read
+          </Button>
+        }
+      />
+      <QueryState
+        query={query}
+        isEmpty={(d) => d.length === 0}
+        empty={<EmptyState icon={Info} title="No notifications" />}
+      >
+        {(items) => (
+          <div className="space-y-2">
+            {items.map((n) => (
+              <Card key={n.id} className={n.read ? "opacity-70" : undefined}>
+                <CardContent className="flex flex-wrap items-start justify-between gap-3 p-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium">{n.subject}</p>
+                      {!n.read && <Badge variant="secondary">new</Badge>}
+                      {n.priority && n.priority !== "normal" && (
+                        <Badge
+                          variant="secondary"
+                          className={
+                            n.priority === "critical" || n.priority === "high"
+                              ? "bg-destructive/15 text-destructive"
+                              : undefined
+                          }
+                        >
+                          {n.priority}
+                        </Badge>
+                      )}
+                    </div>
+                    {n.body && <Markdown className="mt-1 text-sm text-muted-foreground">{n.body}</Markdown>}
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {n.from && (
+                        <span title={senderAgentId(n.from) ?? undefined}>from {sender(n.from)} · </span>
+                      )}
+                      {relativeTime(n.timestamp)}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setRespondTo(n)}>
+                      Respond
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={dismissing.has(n.id)}
+                      onClick={() => void onDismiss(n.id)}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </QueryState>
+      <RespondDialog target={respondTo} onOpenChange={(o) => !o && setRespondTo(null)} />
     </div>
   );
 }
