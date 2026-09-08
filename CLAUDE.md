@@ -107,10 +107,11 @@ rationale + exact re-enable steps).
 - **`VITE_API_BASE` is the ORIGIN only** (e.g. `http://localhost:8080`) — the OpenAPI
   paths already carry the `/api/v1` prefix, so the base must NOT include it. Double-
   prefixing → 404 on every call.
-- **Vite env precedence:** `.env.development.local` **>** `.env.development`. The mock
-  default lives in `.env.development` (origin `:4010`); the integration override
-  (real API, origin `:8080`) lives in **`.env.development.local`** (gitignored). A plain
-  `.env.local` is ignored in dev mode — don't use it.
+- **Vite env precedence:** `.env.development.local` **>** `.env.development`. The default
+  lives in `.env.development` and points at the **real API** (origin `:8080`); override it
+  per-machine — for the Prism mock (origin `:4010`), or to persist the session — in
+  **`.env.development.local`** (gitignored). A plain `.env.local` is ignored in dev mode
+  — don't use it.
 - **Response shapes:** success is `{ data: T }` (`unwrap`), lists are `{ data: T[], meta:{total} }`
   (`unwrapList`). The live API wraps errors as `{ error: { code, message, status } }`; the vendored
   contract documents the flat `{ code, message, status }` — `client.ts` accepts both → `ApiError`.
