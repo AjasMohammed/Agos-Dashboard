@@ -12,7 +12,8 @@ import { Input } from "@/components/ui/input";
 import { toastError } from "@/lib/errors";
 import { pendingHumanInput } from "./pending-human-input";
 import type { Escalation, NotificationSummary } from "@/api/models";
-import type { ChatStream } from "./stream-store";
+import { streamTools, type ChatStream } from "./stream-store";
+import { useAuthStore } from "@/auth/store";
 
 /**
  * Inline approvals and questions for the tool calls of a live chat turn.
@@ -139,10 +140,22 @@ function QuestionCard({ n }: { n: NotificationSummary }) {
 }
 
 export function HumanInLoop({ stream }: { stream: ChatStream }) {
-  const active = stream.tools.some((t) => t.success === undefined && t.taskId);
-  const poll = { enabled: active, refetchInterval: active ? POLL_MS : (false as const) };
-  const escalations = useEscalations(poll);
-  const notifications = useNotifications(poll);
+  const can = useAuthStore((s) => s.can);
+  const active = streamTools(stream).some((t) => t.success === undefined && t.taskId);
+  const interval = active ? POLL_MS : (false as const);
+  // Gated on the read scopes like the activity page: a chat-only key would
+  // otherwise sit in a 1.5s 403 loop the moment an agent calls a tool. The
+  // pending-only entry is shared with the sidebar badge, which simply refreshes
+  // faster while a tool call is waiting on the operator.
+  const escalations = useEscalations({
+    enabled: active && can("escalations:r"),
+    refetchInterval: interval,
+    pending: true,
+  });
+  const notifications = useNotifications({
+    enabled: active && can("notifications:r"),
+    refetchInterval: interval,
+  });
   if (!active) return null;
   const { approvals, questions } = pendingHumanInput(
     stream,

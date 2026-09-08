@@ -47,15 +47,19 @@ function persist(s: Session) {
 }
 
 /**
- * Mirror of the backend `require_permission` semantics: an empty scope list
- * means full access (bootstrap key); `*` matches any resource; the op string
- * must contain the required op char (`r` ⊆ `rw`).
+ * Mirror of the backend `require_permission` semantics (handlers/mod.rs):
+ * an empty scope list grants NOTHING (the server 403s it — a fail-open here
+ * enabled every destructive control on a zero-scope key and on first paint
+ * before `/auth/me` landed); a bare `*` is all resources, all ops; `*:rw`
+ * matches any resource; the op string must contain the required op char
+ * (`r` ⊆ `rw`).
  */
 export function grants(scopes: string[], required: string): boolean {
-  if (scopes.length === 0) return true;
+  if (scopes.length === 0) return false;
   const [reqRes, reqOpRaw] = required.split(":");
   const reqOp = (reqOpRaw ?? "r").charAt(0) || "r";
   return scopes.some((p) => {
+    if (p === "*") return true;
     const [res, op = "r"] = p.split(":");
     return (res === reqRes || res === "*") && op.includes(reqOp);
   });

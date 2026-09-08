@@ -15,8 +15,11 @@ import {
 } from "./event-catalog";
 
 describe("event-catalog", () => {
-  it("covers all 10 categories with non-empty event lists", () => {
-    expect(EVENT_CATALOG).toHaveLength(10);
+  it("covers every generated category with non-empty event lists", () => {
+    // Derived from the generated catalog, not a hardcoded count: the kernel
+    // gains categories (ChatEvents, 2026-08-30) and a literal number turns
+    // that into a test failure instead of information.
+    expect(EVENT_CATALOG).toHaveLength(EVENT_CATALOG_GEN.length);
     for (const c of EVENT_CATALOG) {
       expect(c.events.length).toBeGreaterThan(0);
       expect(c.resource.startsWith("events.")).toBe(true);
@@ -25,8 +28,8 @@ describe("event-catalog", () => {
 
   it("matches every curated category to a generated one", () => {
     // A kernel rename drops the curated entry, and the uncurated fallback
-    // re-adds the category with a humanized label — the catalog length stays
-    // 10, so only these assertions catch the regressed labels.
+    // re-adds the category with a humanized label — the catalog length is
+    // unchanged, so only these assertions catch the regressed labels.
     for (const c of CURATED) {
       expect(EVENT_CATALOG_GEN.some((g) => g.value === c.value)).toBe(true);
     }

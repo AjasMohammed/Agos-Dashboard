@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -12,6 +13,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   ArrowDown,
   Bot,
+  BrainCircuit,
   Check,
   ChevronRight,
   CircleCheck,
@@ -44,26 +46,37 @@ import {
   useRenameChatSession,
   useForkChatSession,
   exportChatSession,
+  chatKeys,
 } from "@/api/queries/chat";
 import {
   abortChatStream,
   consumeFailedChatText,
+  dismissChatStream,
   startChatStream,
   stopChatStream,
+  streamText,
+  streamTools,
   useChatStreamStore,
+  type ChatStream,
+  type StreamPart,
+  type ThoughtBlock,
 } from "./stream-store";
 import { useStickToBottom } from "./stick-to-bottom";
 import { stripMarkdown } from "@/lib/preview-text";
 import { useAgents } from "@/api/queries/agents";
+import { useInvalidateOnEvent } from "@/realtime/cacheBridge";
 import { HumanInLoop } from "./human-in-loop";
 import { Markdown } from "@/components/markdown";
 import { MentionTextarea } from "@/components/mention-textarea";
 import { EmptyState } from "@/components/empty-state";
+import { Callout } from "@/components/ui/callout";
 import { EASE_OUT } from "@/components/motion";
+import { useIsNarrow } from "@/lib/use-is-narrow";
 import { QueryState } from "@/components/query-state";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { copyText } from "@/lib/clipboard";
 import { confirm, promptText } from "@/lib/confirm";
 import { toastError } from "@/lib/errors";
 import { prettyJson, relativeTime } from "@/lib/format";
@@ -81,13 +94,13 @@ const SUGGESTIONS = [
 
 /** Bubble entrance shared by history, streaming echo, and typing indicator. */
 const bubbleMotion = {
-  initial: { opacity: 0, y: 10 },
-  animate: { opacity: 1, y: 0 },
-  transition: { duration: 0.22, ease: EASE_OUT },
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  transition: { duration: 0.15 },
 } as const;
 
-/** The reading column. Everything else (rail, header, composer) frames it. */
-const COLUMN = "mx-auto w-full max-w-3xl px-4";
+/** The content column — full pane width; the rail is the only thing that eats it. */
+const COLUMN = "w-full px-4 sm:px-6";
 
 
 /**
@@ -105,9 +118,23 @@ function withRowKeys<T extends { timestamp: string; role: string }>(rows: T[]) {
   });
 }
 
+/** Newest turn of a role by timestamp — the API does not promise an order. */
+function lastTurn(
+  items: readonly ChatMessage[] | undefined,
+  role: "user" | "assistant",
+): ChatMessage | undefined {
+  let last: ChatMessage | undefined;
+  for (const m of items ?? []) {
+    if (m.role === role && (!last || m.timestamp >= last.timestamp)) last = m;
+  }
+  return last;
+}
+
+const lastUserTurn = (items: readonly ChatMessage[] | undefined) => lastTurn(items, "user");
+
 function AssistantAvatar() {
   return (
-    <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-primary/60 text-primary-foreground shadow-glow">
+    <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary">
       <Sparkles className="size-3.5" />
     </span>
   );
@@ -141,7 +168,7 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
       onClick={copy}
       title={label}
       aria-label={label}
-      className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      className="flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
     >
       {done ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
     </button>
@@ -210,10 +237,10 @@ function ToolPill({
 }) {
   const Tag = onClick ? "button" : "div";
   return (
-    <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/40 text-xs">
+    <div className="overflow-hidden rounded-md border border-border bg-surface text-xs">
       <Tag
         {...(onClick ? { type: "button" as const, onClick, "aria-expanded": open } : {})}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-muted/70"
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-muted/60"
       >
         {onClick && (
           <ChevronRight
@@ -237,7 +264,7 @@ function ToolPill({
             transition={{ duration: 0.18, ease: EASE_OUT }}
             className="overflow-hidden"
           >
-            <div className="space-y-2 border-t border-border/70 p-2.5">{children}</div>
+            <div className="space-y-2 border-t border-border p-2.5">{children}</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -272,7 +299,7 @@ function ToolCallCard({ m }: { m: ChatMessage }) {
       {payload && (
         <div>
           <p className="mb-1 font-medium text-muted-foreground">What it was given</p>
-          <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 font-mono">
+          <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-card p-2 font-mono">
             {payload}
           </pre>
         </div>
@@ -280,7 +307,7 @@ function ToolCallCard({ m }: { m: ChatMessage }) {
       {result && (
         <div>
           <p className="mb-1 font-medium text-muted-foreground">What came back</p>
-          <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 font-mono">
+          <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-card p-2 font-mono">
             {result}
           </pre>
         </div>
@@ -290,11 +317,258 @@ function ToolCallCard({ m }: { m: ChatMessage }) {
   );
 }
 
+/**
+ * A live tool call. Same shell as the persisted card, but fed from the stream:
+ * `result_preview` is the ONLY view of what a call returned until the turn is
+ * written to the transcript, so a failed call opens itself — hiding the error
+ * text behind a disclosure is what made a broken turn unreadable.
+ */
+function LiveToolPill({ part }: { part: Extract<StreamPart, { kind: "tool" }> }) {
+  const [open, setOpen] = useState<boolean | null>(null);
+  const preview = part.preview?.trim();
+  const failed = part.success === false;
+  const isOpen = open ?? failed;
+  return (
+    <ToolPill
+      name={part.name}
+      success={part.success}
+      time={duration(part.durationMs)}
+      open={isOpen}
+      onClick={preview ? () => setOpen(!isOpen) : undefined}
+    >
+      {preview && (
+        <div>
+          <p className="mb-1 font-medium text-muted-foreground">
+            {failed ? "What went wrong" : "What came back"}
+          </p>
+          <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-card p-2 font-mono">
+            {preview}
+          </pre>
+        </div>
+      )}
+    </ToolPill>
+  );
+}
+
+/**
+ * An inference pass. The kernel opens each one with a bare `Thinking { iteration }`
+ * marker and then streams the model's reasoning as `text` deltas — but only for
+ * providers that expose any, so a pass with no text stays a labelled step and
+ * nothing is ever invented to fill it.
+ *
+ * Reasoning renders as plain text, not Markdown: it is the model's scratchpad,
+ * it is re-rendered on every delta, and a half-written fence would flash an
+ * error where a thought should be.
+ */
+function ThinkingStep({
+  iteration,
+  text,
+  active,
+}: {
+  iteration: number;
+  text?: string;
+  active: boolean;
+}) {
+  const panelId = useId();
+  const [open, setOpen] = useState(false);
+  // It opens itself while the pass streams and then STAYS open until the reader
+  // closes it. `active` goes false the instant the first answer token lands, so
+  // following it would snap the panel shut under someone mid-sentence.
+  useEffect(() => {
+    if (active) setOpen(true);
+  }, [active]);
+  const body = text?.trim();
+  const isOpen = open && Boolean(body);
+  const label = (
+    <>
+      <BrainCircuit aria-hidden className="size-3.5 shrink-0" />
+      <span className="font-medium">
+        {active ? "Thinking" : "Thought"}
+        {iteration > 1 && ` · pass ${iteration}`}
+      </span>
+      {active && <Loader2 aria-hidden className="size-3 animate-spin" />}
+    </>
+  );
+  if (!body) return <p className="flex items-center gap-2 text-xs text-tertiary">{label}</p>;
+  return (
+    <div className="text-xs text-tertiary">
+      <button
+        type="button"
+        aria-expanded={isOpen}
+        aria-controls={panelId}
+        onClick={() => setOpen(!isOpen)}
+        className="flex cursor-pointer items-center gap-2 rounded-md text-left transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <ChevronRight
+          aria-hidden
+          className={cn("size-3.5 shrink-0 transition-transform duration-200", isOpen && "rotate-90")}
+        />
+        {label}
+      </button>
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: EASE_OUT }}
+            className="overflow-hidden"
+          >
+            {/* The transcript is a polite live region, and this panel opens
+                itself — without `off` a screen reader narrates the entire
+                scratchpad, token by token, BEFORE the reply it precedes. */}
+            <p
+              id={panelId}
+              aria-live="off"
+              className="ml-[7px] mt-1 whitespace-pre-wrap break-words border-l-2 border-tertiary/30 py-0.5 pl-3 text-muted-foreground"
+            >
+              {body}
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/**
+ * The reasoning of the turn the transcript just took over, replayed above the
+ * reply. It cannot be interleaved with the tool rows here — the persisted
+ * transcript carries no ordering between them — so it sits with the tool cards
+ * that already group above the answer.
+ */
+function HandedOverThoughts({ thoughts }: { thoughts?: ThoughtBlock[] }) {
+  if (!thoughts?.length) return null;
+  return (
+    <div className="space-y-1">
+      {thoughts.map((t, i) => (
+        <ThinkingStep key={i} iteration={t.iteration} text={t.text} active={false} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The turn's steps in the order the server emitted them: think, call, write,
+ * call again, write again. They used to be regrouped as "every tool first,
+ * then all the text", which is not the sequence that happened.
+ */
+function StreamParts({ stream, generating }: { stream: ChatStream; generating: boolean }) {
+  return (
+    <>
+      {stream.parts.map((part, i) => {
+        const last = i === stream.parts.length - 1;
+        if (part.kind === "text")
+          return (
+            <Markdown
+              // Math off while streaming: the whole string is re-parsed per
+              // chunk, and a half-written formula renders as an error.
+              key={i}
+              math={false}
+              className={cn("text-[15px]", last && generating && "streaming")}
+            >
+              {part.text}
+            </Markdown>
+          );
+        if (part.kind === "thinking")
+          return (
+            <ThinkingStep
+              key={i}
+              iteration={part.iteration}
+              text={part.text}
+              active={last && generating}
+            />
+          );
+        return <LiveToolPill key={i} part={part} />;
+      })}
+    </>
+  );
+}
+
+/** What the turn cost, from the `done` frame. Absent on stopped/failed turns. */
+function UsageFooter({ usage }: { usage: ChatStream["usage"] }) {
+  if (!usage) return null;
+  const bits: string[] = [];
+  if (usage.iterations) bits.push(`${usage.iterations} pass${usage.iterations === 1 ? "" : "es"}`);
+  if (usage.tokens) bits.push(`${usage.tokens.toLocaleString()} tokens`);
+  // Sub-cent turns are the norm, so 4dp — 2dp would print "$0.00" for all of them.
+  if (usage.costUsd) bits.push(`$${usage.costUsd.toFixed(4)}`);
+  if (bits.length === 0) return null;
+  return <p className="tnum text-xs text-muted-foreground">{bits.join(" · ")}</p>;
+}
+
+function toolOutcome(success: boolean | null | undefined) {
+  return success === true ? "ok" : success === false ? "failed" : "unknown";
+}
+
+/**
+ * The failure, attached to the turn that produced it.
+ *
+ * A toast alone said "something broke" and then scrolled away, with the partial
+ * answer deleted along with the stream entry — leaving nothing to debug from.
+ * This keeps the message, the machine-facing detail (status/code), the protocol
+ * warnings collected during the turn, and a one-click transcript of all of it.
+ *
+ * Deliberately NO retry button: the kernel persists the user turn before
+ * inference, so resending blind can post the same message twice. The composer
+ * already gets the text back when the transcript proves it was not persisted
+ * (see the restore effect in `Conversation`).
+ */
+function StreamErrorCard({ stream, sessionId }: { stream: ChatStream; sessionId: string }) {
+  const err = stream.error;
+  if (!err) return null;
+  const tools = streamTools(stream);
+  const report = [
+    "AgentOS chat stream failed",
+    `message:  ${err.message}`,
+    err.detail && `detail:   ${err.detail}`,
+    `session:  ${sessionId}`,
+    `at:       ${new Date(err.at).toISOString()}`,
+    `steps:    ${stream.parts.length}`,
+    `reply:    ${streamText(stream).length} chars before the failure`,
+    tools.length > 0 &&
+      `tools:    ${tools.map((t) => `${t.name}=${toolOutcome(t.success)}`).join(", ")}`,
+    stream.warnings?.length && `warnings: ${stream.warnings.join(" | ")}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <Callout
+      role="alert"
+      tone="danger"
+      title="The reply failed"
+      actions={
+        <>
+          <Button size="sm" variant="outline" onClick={() => void copyText(report, "Error details")}>
+            Copy details
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => dismissChatStream(sessionId)}>
+            Dismiss
+          </Button>
+        </>
+      }
+    >
+      <p className="text-foreground">{err.message}</p>
+      {err.detail && <p className="mt-0.5 font-mono text-xs">{err.detail}</p>}
+      {stream.warnings && stream.warnings.length > 0 && (
+        <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-xs">
+          {stream.warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      )}
+      {stream.parts.length > 0 && (
+        <p className="mt-1.5 text-xs">Everything above this notice arrived before the failure.</p>
+      )}
+    </Callout>
+  );
+}
+
 function UserBubble({ text }: { text: string }) {
   return (
     <div className="group flex justify-end">
       <div className="flex max-w-[85%] flex-col items-end gap-1">
-        <div className="whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-relaxed text-primary-foreground shadow-sm">
+        <div className="whitespace-pre-wrap break-words rounded-lg rounded-br-sm bg-accent px-3.5 py-2 text-[15px] leading-relaxed text-foreground">
           {text}
         </div>
         <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
@@ -325,44 +599,25 @@ function AssistantTurn({ children, footer }: { children: ReactNode; footer?: Rea
 function EmptyChat({ onPick }: { onPick: (text: string) => void }) {
   return (
     <div className="flex min-h-[45vh] flex-col items-center justify-center gap-8 py-10 text-center">
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.35, ease: EASE_OUT }}
-      >
-        <h2 className="text-gradient text-3xl font-semibold tracking-tight sm:text-4xl">
-          How can I help?
-        </h2>
+      <div>
+        <h2 className="text-2xl font-semibold tracking-tight">How can I help?</h2>
         <p className="mt-2 text-sm text-muted-foreground">
           Ask in plain words. I can read your files, search the web, set reminders and more.
         </p>
-      </motion.div>
-      <motion.div
-        className="grid w-full gap-2 sm:grid-cols-2"
-        initial="hidden"
-        animate="show"
-        variants={{
-          hidden: {},
-          show: { transition: { staggerChildren: 0.05, delayChildren: 0.1 } },
-        }}
-      >
+      </div>
+      <div className="grid w-full gap-2 sm:grid-cols-2">
         {SUGGESTIONS.map(({ icon: Icon, text }) => (
-          <motion.button
+          <button
             key={text}
             type="button"
             onClick={() => onPick(text)}
-            variants={{
-              hidden: { opacity: 0, y: 10 },
-              show: { opacity: 1, y: 0, transition: { duration: 0.25, ease: EASE_OUT } },
-            }}
-            whileHover={{ y: -2 }}
-            className="flex items-center gap-3 rounded-2xl border border-border bg-card/60 px-4 py-3 text-left text-sm transition-colors hover:border-primary/40 hover:bg-accent/50"
+            className="flex cursor-pointer items-center gap-3 rounded-md border border-border bg-card px-3.5 py-2.5 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <Icon className="size-4 shrink-0 text-primary" />
+            <Icon aria-hidden className="size-4 shrink-0 text-primary" />
             <span className="min-w-0 flex-1">{text}</span>
-          </motion.button>
+          </button>
         ))}
-      </motion.div>
+      </div>
     </div>
   );
 }
@@ -392,7 +647,7 @@ function Composer({
           e.preventDefault();
           onSubmit();
         }}
-        className="flex items-end gap-2 rounded-3xl border border-border bg-card p-2 pl-4 shadow-card transition-shadow duration-200 focus-within:border-primary/40 focus-within:shadow-glow"
+        className="flex items-end gap-2 rounded-lg border border-border bg-card p-1.5 pl-3 transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/25"
       >
         <MentionTextarea
           autoGrow
@@ -400,7 +655,7 @@ function Composer({
           onValueChange={onValueChange}
           placeholder="Ask anything — @ to attach a file"
           containerClassName="flex-1"
-          className="max-h-52 min-h-[24px] resize-none overflow-y-auto rounded-none border-0 bg-transparent px-0 py-2 text-[15px] shadow-none focus-visible:ring-0"
+          className="max-h-52 min-h-[24px] resize-none overflow-y-auto rounded-none border-0 bg-transparent px-0 py-1.5 text-[15px] shadow-none focus-visible:ring-0"
           rows={1}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -414,8 +669,9 @@ function Composer({
             type="button"
             size="icon"
             variant="secondary"
-            className="size-9 shrink-0 rounded-full"
+            className="shrink-0"
             title="Stop generating"
+            aria-label="Stop generating"
             onClick={onStop}
           >
             <Square className="size-3.5 fill-current" />
@@ -424,15 +680,16 @@ function Composer({
           <Button
             type="submit"
             size="icon"
-            className="size-9 shrink-0 rounded-full transition-transform active:scale-95"
+            className="shrink-0"
             disabled={!value.trim() || busy}
             title="Send"
+            aria-label="Send"
           >
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           </Button>
         )}
       </form>
-      <p className="mt-2 text-center text-[11px] text-muted-foreground">
+      <p className="mt-1.5 text-center text-xs text-muted-foreground">
         Enter to send · Shift+Enter for a new line
       </p>
     </div>
@@ -489,8 +746,8 @@ function DraftConversation({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="glass z-10 flex h-14 shrink-0 items-center gap-1 border-b border-border px-3">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <header className="z-10 flex h-12 shrink-0 items-center gap-1 border-b border-border bg-background px-2">
         <Button
           variant="ghost"
           size="icon"
@@ -501,7 +758,7 @@ function DraftConversation({
         </Button>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">New chat</p>
-          {agentName && <p className="truncate text-[11px] text-muted-foreground">{agentName}</p>}
+          {agentName && <p className="truncate text-xs text-muted-foreground">{agentName}</p>}
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -543,16 +800,57 @@ function Conversation({
   onForked: (id: string) => void;
 }) {
   const sessionId = session.id;
-  const messages = useChatMessages(sessionId);
+  // The stream lives in a module store, so it survives this component
+  // unmounting (page change / session switch) and is still here on return.
+  const streaming = useChatStreamStore((s) => s.streams[sessionId]);
+  // "Generating" is stricter than "bubble on screen": after Stop, done, or a
+  // failure the bubble stays until the transcript replaces it (or, on the error
+  // path, until Dismiss) but the composer is free — and, crucially, so are the
+  // refetches below. Keying them off "an entry exists" left a failed turn that
+  // nobody dismissed with refetch-on-focus/mount/reconnect off and the `chat`
+  // channel unsubscribed FOREVER: that session's transcript would never update
+  // again.
+  const generating = Boolean(streaming && !streaming.done);
+  // Pause focus-refetch while generating: the kernel persists the user turn
+  // before inference, so a refetch mid-stream would render it twice.
+  const messages = useChatMessages(sessionId, generating);
+  // A turn written by another tab (or a channel bridge) arrives on the kernel's
+  // `chat` channel. Skipped while this tab is streaming — it renders its own
+  // turn locally and a refetch would duplicate it.
+  useInvalidateOnEvent(
+    generating ? null : "chat",
+    [chatKeys.messages(sessionId), chatKeys.sessions],
+    { debounceMs: 300 },
+  );
   const del = useDeleteChatSession();
   const rename = useRenameChatSession();
   const fork = useForkChatSession();
   const [text, setText] = useState("");
-  // The stream lives in a module store, so it survives this component
-  // unmounting (page change / session switch) and is still here on return.
-  const streaming = useChatStreamStore((s) => s.streams[sessionId]);
+  // Survives the handover to the transcript, which carries no tokens/cost.
+  const lastUsage = useChatStreamStore((s) => s.turnUsage[sessionId]);
+  // Survives the handover for the same reason the cost does — the transcript has
+  // nowhere to put it. Only the newest turn keeps it, and only until a reload.
+  const lastThoughts = useChatStreamStore((s) => s.turnThinking[sessionId]);
   const failedText = useChatStreamStore((s) => s.failed[sessionId]);
+  const failedAt = useChatStreamStore((s) => s.failedAt[sessionId]);
   const { viewportRef, contentRef, onScroll, showJump, scrollToBottom } = useStickToBottom();
+  // Once the transcript holds the turn being streamed (a refetch landed
+  // mid-reply), the persisted row replaces the local echo — never both.
+  const echoed = Boolean(
+    streaming && lastUserTurn(messages.data?.items)?.content.trim() === streaming.user.trim(),
+  );
+  // Same guard for the reply. It matters on two paths: the frame between the
+  // handover refetch resolving and the entry being dropped, and a failed turn
+  // whose bubble deliberately stays up — if the kernel persisted the partial
+  // answer anyway, it must not appear twice.
+  const streamedText = streaming ? streamText(streaming).trim() : "";
+  // ONLY the newest reply. Scanning every assistant message matched an older
+  // identical one — a canned refusal, a repeated tool error — the instant the
+  // new reply grew into the same string, and the live turn blanked itself just
+  // as it finished (taking any pending approval card with it).
+  const replyEchoed = Boolean(
+    streamedText && lastTurn(messages.data?.items, "assistant")?.content.trim() === streamedText,
+  );
   // ponytail: MentionTextarea owns its own ref and doesn't forward one; reach
   // the textarea through the form we render rather than rewiring a shared component.
   const formRef = useRef<HTMLFormElement>(null);
@@ -568,12 +866,34 @@ function Conversation({
   // transcript — the view sat at the top and teleported on the next token.
 
   // A send that failed (here or while we were unmounted) parks its text for
-  // the composer — but never clobber text typed since.
+  // the composer — but never clobber text typed since, and never restore a
+  // turn the kernel already persisted (it writes the user turn before
+  // inference): resending that would duplicate it. So wait for the transcript
+  // refetch that `fail()` triggers, then look at the last user message.
   useEffect(() => {
     if (!failedText) return;
-    setText((cur) => (cur.trim() ? cur : failedText));
+    const refetched =
+      failedAt != null &&
+      (messages.dataUpdatedAt >= failedAt || messages.errorUpdatedAt >= failedAt);
+    if (!refetched) return;
+    const lastUser = lastUserTurn(messages.data?.items);
+    const persisted = lastUser?.content.trim() === failedText.trim();
+    if (persisted) {
+      toast.message("Your message was saved, but the reply failed.", {
+        description: "Send a follow-up to continue — resending it would post it twice.",
+      });
+    } else {
+      setText((cur) => (cur.trim() ? cur : failedText));
+    }
     consumeFailedChatText(sessionId);
-  }, [failedText, sessionId]);
+  }, [
+    failedText,
+    failedAt,
+    sessionId,
+    messages.dataUpdatedAt,
+    messages.errorUpdatedAt,
+    messages.data,
+  ]);
 
   function focusComposer() {
     formRef.current?.querySelector("textarea")?.focus();
@@ -581,7 +901,7 @@ function Conversation({
 
   function submit() {
     const t = text.trim();
-    if (!t || streaming) return;
+    if (!t || generating) return;
     setText("");
     startChatStream(sessionId, t);
     // "auto", not the default smooth: the scroll events an animation emits on
@@ -595,7 +915,8 @@ function Conversation({
       confirmLabel: "Rename",
       input: { defaultValue: session.title ?? "", placeholder: "Chat title", label: "Chat title" },
     });
-    if (title == null) return;
+    // Empty would blank the title for good; unchanged is a no-op.
+    if (!title || title === session.title) return;
     rename.mutateAsync({ id: sessionId, title }).catch(toastError);
   }
 
@@ -624,8 +945,8 @@ function Conversation({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="glass z-10 flex h-14 shrink-0 items-center gap-1 border-b border-border px-3">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <header className="z-10 flex h-12 shrink-0 items-center gap-1 border-b border-border bg-background px-2">
         <Button
           variant="ghost"
           size="icon"
@@ -637,7 +958,7 @@ function Conversation({
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{session.title ?? session.agent_name}</p>
           {session.title && (
-            <p className="truncate text-[11px] text-muted-foreground">{session.agent_name}</p>
+            <p className="truncate text-xs text-muted-foreground">{session.agent_name}</p>
           )}
         </div>
         <Button variant="ghost" size="icon" title="Rename" onClick={() => void onRename()}>
@@ -697,7 +1018,7 @@ function Conversation({
                 // after it — handing an expanded ToolCallCard's open state to a
                 // different call. `ChatMessage` carries no id; timestamp+role is
                 // the stable pair the transcript actually has.
-                withRowKeys(visible).map(({ m, key }) => (
+                withRowKeys(visible).map(({ m, key }, i, rows) => (
                   <motion.div key={key} {...bubbleMotion}>
                     {m.role === "tool" ? (
                       <div className="pl-10">
@@ -708,11 +1029,23 @@ function Conversation({
                     ) : (
                       <AssistantTurn
                         footer={
-                          <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-                            <CopyButton text={m.content} label="Copy reply" />
+                          <div className="flex items-center gap-2">
+                            <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+                              <CopyButton text={m.content} label="Copy reply" />
+                            </div>
+                            {/* Only under the newest reply, and only while it is
+                                the turn those numbers came from. */}
+                            {!streaming && i === rows.length - 1 && (
+                              <UsageFooter usage={lastUsage} />
+                            )}
                           </div>
                         }
                       >
+                        {/* Same placement rule as the usage footer: the newest
+                            reply is the only row those steps belong to. */}
+                        {!streaming && i === rows.length - 1 && (
+                          <HandedOverThoughts thoughts={lastThoughts} />
+                        )}
                         <Markdown className="text-[15px]">{m.content}</Markdown>
                       </AssistantTurn>
                     )}
@@ -724,31 +1057,44 @@ function Conversation({
 
           {streaming && (
             <>
-              <motion.div {...bubbleMotion}>
-                <UserBubble text={streaming.user} />
-              </motion.div>
-              <motion.div {...bubbleMotion}>
-                <AssistantTurn>
-                  {streaming.tools.map((t, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.18, ease: EASE_OUT }}
-                      className="mb-1.5"
-                    >
-                      {/* undefined until `tool_result` settles it — the spinner state. */}
-                      <ToolPill name={t.name} success={t.success} />
-                    </motion.div>
-                  ))}
-                  {streaming.assistant ? (
-                    <Markdown className="streaming text-[15px]">{streaming.assistant}</Markdown>
-                  ) : (
-                    <TypingDots />
-                  )}
-                  <HumanInLoop stream={streaming} />
-                </AssistantTurn>
-              </motion.div>
+              {!echoed && (
+                <motion.div {...bubbleMotion}>
+                  <UserBubble text={streaming.user} />
+                </motion.div>
+              )}
+              {(!replyEchoed || streaming.error) && (
+                <motion.div {...bubbleMotion}>
+                  <AssistantTurn
+                    footer={
+                      <div className="flex items-center gap-2">
+                        {!generating && streamedText && (
+                          <div className="opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+                            <CopyButton text={streamText(streaming)} label="Copy reply" />
+                          </div>
+                        )}
+                        <UsageFooter usage={streaming.usage} />
+                      </div>
+                    }
+                  >
+                    {!replyEchoed && (
+                      <StreamParts stream={streaming} generating={generating} />
+                    )}
+                    {/* Nothing has arrived yet: the request is out, the first
+                        frame is not. */}
+                    {streaming.parts.length === 0 && generating && <TypingDots />}
+                    {/* A turn can end cleanly with no text at all — every
+                        iteration was a tool call, or the model returned empty.
+                        Silence with no explanation reads as a bug. */}
+                    {!generating && !streaming.error && !streamedText && (
+                      <p className="text-sm text-muted-foreground">
+                        The assistant finished without writing a reply.
+                      </p>
+                    )}
+                    <StreamErrorCard stream={streaming} sessionId={sessionId} />
+                    <HumanInLoop stream={streaming} />
+                  </AssistantTurn>
+                </motion.div>
+              )}
             </>
           )}
         </div>
@@ -766,7 +1112,7 @@ function Conversation({
               exit={{ opacity: 0, y: 8, scale: 0.9 }}
               transition={{ duration: 0.18, ease: EASE_OUT }}
               onClick={() => scrollToBottom()}
-              className="absolute -top-11 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs shadow-card hover:bg-accent"
+              className="absolute -top-11 left-1/2 z-10 flex -translate-x-1/2 cursor-pointer items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs shadow-popover hover:bg-accent"
             >
               <ArrowDown className="size-3.5" /> Jump to latest
             </motion.button>
@@ -777,7 +1123,7 @@ function Conversation({
           value={text}
           onValueChange={setText}
           onSubmit={submit}
-          onStop={streaming ? () => stopChatStream(sessionId) : undefined}
+          onStop={generating ? () => stopChatStream(sessionId) : undefined}
         />
       </div>
     </div>
@@ -813,6 +1159,7 @@ export function ChatPage() {
   );
   const [agent, setAgent] = useState(() => readStored(AGENT_KEY, ""));
   const [railOpen, setRailOpen] = useState(() => readStored(RAIL_KEY, "1") === "1");
+  const narrow = useIsNarrow();
   // "New chat" opens a draft — nothing is written until the first send.
   const [draft, setDraft] = useState(false);
   // A session we just created, kept until the list query catches up: without it
@@ -855,6 +1202,8 @@ export function ChatPage() {
   function openSession(id: string) {
     setDraft(false);
     setSelected(id);
+    // Picking a chat in the floating rail should hand the pane back.
+    if (narrow) setRailOpen(false);
   }
 
   const noAgents = agents.isSuccess && agentList.length === 0;
@@ -864,21 +1213,53 @@ export function ChatPage() {
   // The only rail toggle lives in a conversation header — with neither pane
   // rendered, a collapsed rail would hide "New chat" with no way back.
   const showRail = railOpen || (!current && !showDraft);
+  // Below `md` the 264px rail would leave the conversation ~120px wide, which no
+  // amount of wrapping saves — so it FLOATS over the pane there instead of eating
+  // its width. Suppressing it outright is what the first pass did, and that made
+  // the header toggle a dead button: `current` falls back to `items[0]`, so the
+  // forced-open branch above never fires once a session exists.
+  const overlay = narrow && showRail;
+
+  // Not persisted: this is the viewport talking, not the operator, so rotating
+  // back to a wide screen must not have silently changed their preference.
+  useEffect(() => {
+    if (narrow) setRailOpen(false);
+  }, [narrow]);
+
+  // Escape closes it, like any other overlay.
+  useEffect(() => {
+    if (!overlay) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setRailOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [overlay]);
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* The shell's PageHeader is gone here — chat owns the viewport — so the
           route still needs a name for screen readers and the nav landmark. */}
       <h1 className="sr-only">Chat</h1>
+      {overlay && (
+        <div
+          aria-hidden
+          onClick={() => setRailOpen(false)}
+          className="fixed inset-0 z-30 bg-black/40 animate-fade-in"
+        />
+      )}
       <motion.aside
         animate={{ width: showRail ? 264 : 0 }}
         initial={false}
         transition={reduced ? { duration: 0 } : { duration: 0.25, ease: EASE_OUT }}
-        className="flex shrink-0 flex-col overflow-hidden border-r border-border bg-card/30"
+        className={cn(
+          "flex shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar",
+          overlay && "fixed inset-y-0 left-0 z-40 shadow-dialog",
+        )}
       >
         <div className="w-[264px] space-y-2 border-b border-border p-3">
           <Button
-            className="w-full justify-start rounded-xl"
+            className="w-full justify-start"
             onClick={() => {
               setDraft(true);
               setSelected(null);
@@ -892,7 +1273,7 @@ export function ChatPage() {
             value={agentName}
             onChange={(e) => pickAgent(e.target.value)}
             disabled={agentList.length === 0}
-            className="h-8 w-full text-xs"
+            className="w-full text-xs"
           >
             {agentList.length === 0 && <option value="">No agents</option>}
             {agentList.map((a) => (
@@ -906,7 +1287,7 @@ export function ChatPage() {
           {sessions.isPending ? (
             <div className="space-y-2">
               {Array.from({ length: 6 }).map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full rounded-xl" />
+                <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
           ) : items.length === 0 ? (
@@ -917,27 +1298,21 @@ export function ChatPage() {
                 <li key={s.id}>
                   <button
                     onClick={() => openSession(s.id)}
+                    aria-current={current?.id === s.id ? "true" : undefined}
                     className={cn(
-                      "relative w-full rounded-xl px-3 py-2 text-left text-sm transition-colors",
+                      "relative w-full cursor-pointer rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       current?.id === s.id
-                        ? "text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                     )}
                   >
-                    {current?.id === s.id && (
-                      <motion.span
-                        layoutId="chat-session-active"
-                        className="absolute inset-0 rounded-xl bg-accent"
-                        transition={{ type: "spring", stiffness: 400, damping: 32 }}
-                      />
-                    )}
                     <span className="relative z-10 block truncate font-medium text-foreground">
                       {s.title ?? s.agent_name}
                     </span>
                     <span className="relative z-10 block truncate text-xs text-muted-foreground">
                       {stripMarkdown(s.preview) || "—"}
                     </span>
-                    <span className="relative z-10 mt-0.5 block truncate text-[10px] text-muted-foreground">
+                    <span className="relative z-10 mt-0.5 block truncate text-xs text-muted-foreground">
                       {s.message_count} msg · {relativeTime(s.updated_at)}
                     </span>
                   </button>

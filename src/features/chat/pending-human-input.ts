@@ -1,5 +1,5 @@
 import type { Escalation, NotificationSummary } from "@/api/models";
-import type { ChatStream } from "./stream-store";
+import { streamTools, type ChatStream } from "./stream-store";
 
 export interface PendingHumanInput {
   approvals: { escalation: Escalation; toolName?: string }[];
@@ -12,7 +12,7 @@ export function pendingHumanInput(
   escalations: readonly Escalation[],
   notifications: readonly NotificationSummary[],
 ): PendingHumanInput {
-  const running = stream.tools.filter((t) => t.success === undefined && t.taskId);
+  const running = streamTools(stream).filter((t) => t.success === undefined && t.taskId);
   // Every call in one LLM iteration shares the turn's task id, so a task id maps
   // to a tool name only when exactly one call is in flight under it. Anything
   // else is ambiguous and must not be attributed to a named tool.

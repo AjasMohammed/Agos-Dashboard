@@ -6,6 +6,8 @@
  */
 export function stripMarkdown(text: string | null | undefined): string {
   if (!text) return "";
+  // Rail previews are one line; cap before the regex passes.
+  text = text.slice(0, 300);
   return (
     text
       // fenced code: keep the body, drop the fences

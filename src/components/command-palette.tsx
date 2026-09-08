@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { Search } from "lucide-react";
-import { NAV_ITEMS } from "@/app/nav";
+import { CornerDownLeft, Search } from "lucide-react";
+import { NAV } from "@/app/nav";
 import { useAuthStore } from "@/auth/store";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
@@ -13,11 +13,11 @@ interface Command {
 }
 
 /**
- * Cmd/Ctrl-K jump-to. Every route stays reachable by name even though the
- * sidebar only shows the primary ones.
+ * Cmd/Ctrl-K jump-to. Every route stays reachable by name regardless of which
+ * sidebar groups are folded.
  *
- * ponytail: a filtered list over `NAV_ITEMS`, no `cmdk` dependency — substring
- * match is enough for ~33 destinations.
+ * ponytail: a filtered list over the nav, no `cmdk` dependency — substring
+ * match is enough for ~35 destinations.
  */
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -42,6 +42,12 @@ export function CommandPalette() {
   }, []);
 
   useEffect(() => {
+    const openPalette = () => setOpen(true);
+    window.addEventListener("agentos:command-palette", openPalette);
+    return () => window.removeEventListener("agentos:command-palette", openPalette);
+  }, []);
+
+  useEffect(() => {
     if (open) {
       setQuery("");
       setActive(0);
@@ -52,13 +58,13 @@ export function CommandPalette() {
     () => [
       // Same scope gate the nav entries get — a key without chat:r would only
       // be bounced to the dashboard.
-      ...(can("chat:r") ? [{ label: "New chat", to: "/", group: "Do" }] : []),
-      { label: "Set up an assistant", to: "/welcome", group: "Do" },
-      ...NAV_ITEMS.filter((i) => !i.scope || can(i.scope)).map((i) => ({
-        label: i.label,
-        to: i.to,
-        group: "Go to",
-      })),
+      ...(can("chat:r") ? [{ label: "New chat", to: "/", group: "Actions" }] : []),
+      { label: "Set up an assistant", to: "/welcome", group: "Actions" },
+      ...NAV.flatMap((g) =>
+        g.items
+          .filter((i) => !i.scope || can(i.scope))
+          .map((i) => ({ label: i.label, to: i.to, group: g.label })),
+      ),
     ],
     [can],
   );
@@ -69,9 +75,9 @@ export function CommandPalette() {
     return hits.slice(0, 12);
   }, [commands, query]);
 
-  // Keep the highlighted option visible: the list caps at max-h-80 but shows up
-  // to 12 results, so arrowing to the last few moved aria-activedescendant (and
-  // the highlight) off-screen. `block: "nearest"` scrolls only when it has to.
+  // Keep the highlighted option visible: the list caps its height but shows up
+  // to 12 results, so arrowing to the last few would move the highlight (and
+  // aria-activedescendant) off-screen. `block: "nearest"` scrolls only when needed.
   useEffect(() => {
     if (matches.length === 0) return;
     document.getElementById(`${listboxId}-opt-${active}`)?.scrollIntoView({ block: "nearest" });
@@ -89,11 +95,13 @@ export function CommandPalette() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="top-[20%] translate-y-0 p-0">
+      <DialogContent className="top-[12%] max-w-lg translate-y-0 gap-0 overflow-hidden p-0">
         <DialogTitle className="sr-only">Search</DialogTitle>
-        <DialogDescription className="sr-only">Type to filter pages, then press Enter to jump.</DialogDescription>
-        <div className="flex items-center gap-2 border-b border-border px-3">
-          <Search className="size-4 shrink-0 text-muted-foreground" />
+        <DialogDescription className="sr-only">
+          Type to filter pages, then press Enter to jump.
+        </DialogDescription>
+        <div className="flex items-center gap-2.5 border-b border-border px-3">
+          <Search aria-hidden className="size-4 shrink-0 text-muted-foreground" />
           <input
             autoFocus
             value={query}
@@ -113,25 +121,21 @@ export function CommandPalette() {
                 run(matches[active]);
               }
             }}
-            placeholder="Search pages and actions…"
+            placeholder="Go to page or action…"
+            spellCheck={false}
+            autoComplete="off"
             // Combobox semantics mirroring mention-textarea.tsx: without them a
             // screen reader announces a plain text field and never reads the
-            // highlighted result. pr-10 keeps the text clear of the dialog's
-            // close button (pinned absolute right-4 top-4).
+            // highlighted result. pr-8 keeps the text clear of the close button.
             role="combobox"
             aria-autocomplete="list"
             aria-expanded={matches.length > 0}
             aria-controls={matches.length > 0 ? listboxId : undefined}
             aria-activedescendant={matches.length > 0 ? `${listboxId}-opt-${active}` : undefined}
-            className="h-11 w-full bg-transparent pr-10 text-sm outline-none placeholder:text-muted-foreground"
+            className="h-11 w-full bg-transparent pr-8 text-sm outline-none placeholder:text-muted-foreground/70"
           />
         </div>
-        <ul
-          id={listboxId}
-          role="listbox"
-          aria-label="Results"
-          className="max-h-80 overflow-y-auto p-1"
-        >
+        <ul id={listboxId} role="listbox" aria-label="Results" className="max-h-80 overflow-y-auto p-1.5">
           {matches.length === 0 && (
             <li role="presentation" className="px-3 py-6 text-center text-sm text-muted-foreground">
               No matches
@@ -148,12 +152,15 @@ export function CommandPalette() {
                 onMouseEnter={() => setActive(i)}
                 onClick={() => run(c)}
                 className={cn(
-                  "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm",
-                  i === active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+                  "flex w-full cursor-pointer items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-100",
+                  i === active ? "bg-accent text-foreground" : "text-foreground/90",
                 )}
               >
-                <span>{c.label}</span>
-                <span className="text-xs text-muted-foreground">{c.group}</span>
+                <span className="truncate">{c.label}</span>
+                <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                  {c.group}
+                  {i === active && <CornerDownLeft aria-hidden className="size-3.5" />}
+                </span>
               </button>
             </li>
           ))}

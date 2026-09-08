@@ -19,6 +19,7 @@ export interface GeneratedEventCategory {
 export const EVENT_CATALOG_GEN: readonly GeneratedEventCategory[] = [
   { value: "AgentLifecycle", resource: "events.agent_lifecycle", events: ["AgentAdded", "AgentRemoved", "AgentPermissionGranted", "AgentPermissionRevoked"] },
   { value: "TaskLifecycle", resource: "events.task_lifecycle", events: ["TaskStarted", "TaskCompleted", "TaskFailed", "TaskTimedOut", "TaskDelegated", "TaskRetrying", "TaskDeadlockDetected", "TaskPreempted"] },
+  { value: "ChatEvents", resource: "events.chat", events: ["ChatMessageAdded"] },
   { value: "SecurityEvents", resource: "events.security", events: ["PromptInjectionAttempt", "CapabilityViolation", "UnauthorizedToolAccess", "SecretsAccessAttempt", "SandboxEscapeAttempt", "AuditLogTamperAttempt", "AgentImpersonationAttempt", "UnverifiedToolInstalled"] },
   { value: "MemoryEvents", resource: "events.memory", events: ["ContextWindowNearLimit", "ContextWindowExhausted", "EpisodicMemoryWritten", "SemanticMemoryConflict", "MemorySearchFailed", "WorkingMemoryEviction"] },
   { value: "SystemHealth", resource: "events.system_health", events: ["CPUSpikeDetected", "MemoryPressure", "DiskSpaceLow", "DiskSpaceCritical", "ProcessCrashed", "NetworkInterfaceDown", "ContainerResourceQuotaExceeded", "KernelSubsystemError"] },

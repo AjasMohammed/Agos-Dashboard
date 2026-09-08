@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { FolderOpen, NotebookPen, Lock, DollarSign, FileText, Copy, AtSign, KeySquare, Cpu } from "lucide-react";
+import { FolderOpen, NotebookPen, Lock, DollarSign, FileText, Copy, AtSign, KeySquare, Cpu, Sliders } from "lucide-react";
 import {
   useFiles,
   useDeleteFile,
@@ -34,7 +34,7 @@ import { DataTable, type Column } from "@/components/data-table";
 import { EmptyState } from "@/components/empty-state";
 import { FilePreview, FileThumb } from "@/components/file-preview";
 import { StatusBadge } from "@/components/status-badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -53,10 +53,23 @@ import {
 import { confirm } from "@/lib/confirm";
 import { useDirtyGuard } from "@/lib/use-dirty-guard";
 import { toastError } from "@/lib/errors";
-import { bytes, relativeTime, usd, tokens } from "@/lib/format";
+import {
+  bytes,
+  relativeTime,
+  usd,
+  tokens,
+  humanizeKey,
+  flattenConfig,
+  configValue,
+  type ConfigLeaf,
+} from "@/lib/format";
 import { useAgentNames, agentLabel } from "@/lib/agent-names";
 import { cn } from "@/lib/utils";
+import { configHint, configKeyHint, configSectionHint } from "./config-hints";
 import type { FileMeta, CostSummaryEntry } from "@/api/models";
+import { copyText } from "@/lib/clipboard";
+import { Stat, StatGrid } from "@/components/ui/stat";
+import { Callout } from "@/components/ui/callout";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -77,17 +90,6 @@ async function downloadFile(id: string, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function copyText(text: string, label: string) {
-  // navigator.clipboard is absent in insecure (plain-http, non-localhost) contexts.
-  if (!navigator.clipboard) {
-    toast.error("Copy failed (clipboard unavailable)");
-    return;
-  }
-  navigator.clipboard.writeText(text).then(
-    () => toast.success(`${label} copied`),
-    () => toast.error("Copy failed"),
-  );
-}
 
 function UploadButton() {
   const upload = useUploadFile();
@@ -134,7 +136,7 @@ export function FilesPage() {
         {(data) => (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {data.items.map((f) => (
-              <Card key={f.id} className="flex flex-col overflow-hidden hover:shadow-md">
+              <Card key={f.id} className="flex flex-col overflow-hidden transition-colors hover:border-muted-foreground/40">
                 {/* The thumbnail is the affordance — clicking it opens the full
                     preview. Kept as its own control so the row of actions below
                     stays reachable (no nested interactive elements). */}
@@ -343,7 +345,7 @@ export function ScratchpadPage() {
   const [editPage, setEditPage] = useState<string | null>(null);
   return (
     <div>
-      <PageHeader title="Agent notes" description="Working notes your assistants keep for themselves." />
+      <PageHeader title="Scratchpad" description="Working notes agents keep for themselves between tasks." />
       <QueryState query={query} isEmpty={(d) => d.pages.length === 0} empty={<EmptyState icon={NotebookPen} title="No pages" />}>
         {(data) => (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -378,10 +380,16 @@ function SetSecretDialog() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  // The API refuses to default this: `global` makes the secret readable by
+  // every agent and tool on the host, so the operator has to type it. Starting
+  // it pre-filled would put the widest scope back one click away, which is the
+  // thing the missing server-side default exists to prevent.
+  const [scope, setScope] = useState("");
   const set = useSetSecret();
   function reset() {
     setName("");
     setValue("");
+    setScope("");
     // react-query keeps `variables` — i.e. the plaintext value — for the
     // observer's lifetime plus gcTime, deliberately, so a rejected call can be
     // retried. Clearing component state alone still leaves the secret readable
@@ -391,7 +399,7 @@ function SetSecretDialog() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     try {
-      await set.mutateAsync({ name: name.trim(), value });
+      await set.mutateAsync({ name: name.trim(), value, scope: scope.trim() });
       toast.success("Secret saved");
       setOpen(false);
       reset();
@@ -427,8 +435,21 @@ function SetSecretDialog() {
         <form onSubmit={onSubmit} className="grid gap-3">
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" required />
           <Input type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="Value" required />
+          <div className="space-y-1">
+            <Input
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+              placeholder="Scope"
+              required
+            />
+            <p className="text-xs text-muted-foreground">
+              <code>global</code>, <code>kernel</code>, <code>agent:&lt;name&gt;</code> or{" "}
+              <code>tool:&lt;name&gt;</code>. <code>global</code> is readable by every agent and
+              tool on this host.
+            </p>
+          </div>
           <DialogFooter>
-            <Button type="submit" disabled={set.isPending || !name.trim() || !value}>Save</Button>
+            <Button type="submit" disabled={set.isPending || !name.trim() || !value || !scope.trim()}>Save</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -460,7 +481,7 @@ export function SecretsPage() {
   }
   return (
     <div>
-      <PageHeader title="API keys & credentials" description="Provider API keys and other credentials, stored encrypted. Values are never shown." actions={<SetSecretDialog />} />
+      <PageHeader title="Secrets" description="Provider API keys and other credentials, stored encrypted in the vault. Values are never shown again." actions={<SetSecretDialog />} />
       <QueryState query={query} isEmpty={(d) => d.length === 0} empty={<EmptyState icon={Lock} title="No credentials yet" action={<SetSecretDialog />} />}>
         {(items) => {
           const internal = items.filter((s) => s.name?.startsWith(AGENT_IDENTITY_PREFIX));
@@ -531,11 +552,18 @@ export function CostsPage() {
   );
 }
 
+/** "api" → "API", "agent_budget" → "Agent budget". */
+const ACRONYMS = new Set(["api", "otel", "hal", "mcp", "llm", "ui", "cpu", "gpu"]);
+function sectionTitle(section: string): string {
+  return ACRONYMS.has(section) ? section.toUpperCase() : humanizeKey(section);
+}
+
 export function ConfigPage() {
   const query = useConfig();
   const setCfg = useSetConfig();
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
+  const [filter, setFilter] = useState("");
   async function onSet(e: FormEvent) {
     e.preventDefault();
     // Writes live kernel config and takes effect immediately — show the key and
@@ -582,12 +610,115 @@ export function ConfigPage() {
           {setCfg.isPending ? "Setting…" : "Set"}
         </Button>
       </form>
+      {/* What the operator is about to overwrite, in full — the row hints are clamped. */}
+      {configHint(key.trim()) && (
+        <p className="mb-4 max-w-3xl text-xs text-muted-foreground">{configHint(key.trim())}</p>
+      )}
       <QueryState query={query}>
-        {(tree) => (
-          <pre className="overflow-auto rounded-lg border border-border bg-muted p-4 text-xs">
-            {JSON.stringify(tree.config, null, 2)}
-          </pre>
-        )}
+        {(tree) => {
+          const leaves = flattenConfig(tree.config);
+          const q = filter.trim().toLowerCase();
+          const shown = q
+            ? leaves.filter(
+                (l) =>
+                  l.key.toLowerCase().includes(q) ||
+                  configValue(l.value).toLowerCase().includes(q) ||
+                  // Hints too: "backlog" should find kernel.boot_replay_max_age_hours.
+                  (configKeyHint(l.key)?.toLowerCase().includes(q) ?? false),
+              )
+            : leaves;
+          // Group by the top-level section ("api", "kernel", …) — the same
+          // grouping the TOML file has, so a key is where the operator expects.
+          const sections = new Map<string, ConfigLeaf[]>();
+          for (const leaf of shown) {
+            const section = leaf.key.split(".")[0];
+            const rows = sections.get(section);
+            if (rows) rows.push(leaf);
+            else sections.set(section, [leaf]);
+          }
+          return (
+            <div>
+              <Input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Filter keys and values…"
+                className="mb-4 max-w-sm"
+              />
+              {sections.size === 0 ? (
+                <EmptyState icon={Sliders} title="No matching keys" />
+              ) : (
+                <div className="columns-1 gap-4 lg:columns-2 xl:columns-3">
+                  {[...sections].map(([section, rows]) => (
+                    <Card key={section} className="mb-4 break-inside-avoid">
+                      <CardHeader className="space-y-1 p-4 pb-2">
+                        <CardTitle className="text-sm">{sectionTitle(section)}</CardTitle>
+                        {configSectionHint(section) && (
+                          <CardDescription className="line-clamp-3 text-[11px] leading-snug">
+                            {configSectionHint(section)}
+                          </CardDescription>
+                        )}
+                      </CardHeader>
+                      <CardContent className="p-2 pt-0">
+                        {rows.map((leaf) => {
+                          const redacted = leaf.value === "***REDACTED***";
+                          const hint = configKeyHint(leaf.key);
+                          return (
+                            <button
+                              key={leaf.key}
+                              type="button"
+                              // Rows are the fastest way into the Set form: the
+                              // dotted key is exactly what the write endpoint takes.
+                              onClick={() => {
+                                setKey(leaf.key);
+                                setValue(redacted ? "" : JSON.stringify(leaf.value));
+                              }}
+                              title={[
+                                `${leaf.key} = ${configValue(leaf.value)}`,
+                                configHint(leaf.key),
+                              ]
+                                .filter(Boolean)
+                                .join("\n\n")}
+                              className="flex w-full items-baseline justify-between gap-3 rounded-md px-2 py-1.5 text-left hover:bg-muted"
+                            >
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate font-mono text-xs text-muted-foreground">
+                                  {leaf.key.slice(section.length + 1) || section}
+                                </span>
+                                {hint && (
+                                  <span className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground/70">
+                                    {hint}
+                                  </span>
+                                )}
+                              </span>
+                              {redacted ? (
+                                <Badge variant="muted">redacted</Badge>
+                              ) : (
+                                <span
+                                  className={cn(
+                                    "max-w-[55%] shrink-0 truncate font-mono text-xs",
+                                    leaf.value == null && "text-muted-foreground",
+                                  )}
+                                >
+                                  {configValue(leaf.value)}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+              <details className="mt-4">
+                <summary className="cursor-pointer text-sm text-muted-foreground">Raw JSON</summary>
+                <pre className="mt-2 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
+                  {JSON.stringify(tree.config, null, 2)}
+                </pre>
+              </details>
+            </div>
+          );
+        }}
       </QueryState>
     </div>
   );
@@ -625,15 +756,22 @@ export function DoctorPage() {
             {(() => {
               const warns = report.checks.filter((c) => c.status === "warn").length;
               const fails = report.checks.filter((c) => c.status === "fail").length;
-              const tone =
-                fails > 0 ? "bg-destructive/15 text-destructive" : warns > 0 ? "bg-warning/15 text-warning" : "bg-success/15 text-success";
+              const tone = fails > 0 ? "danger" : warns > 0 ? "warning" : "success";
               const text =
                 fails > 0
                   ? `${fails} check${fails === 1 ? "" : "s"} failing.`
                   : warns > 0
                     ? `All checks passing, ${warns} warning${warns === 1 ? "" : "s"}.`
                     : "All checks passing.";
-              return <div className={cn("rounded-md p-3 text-sm", tone)}>{text}</div>;
+              return (
+                <Callout tone={tone} role="status" title={text}>
+                  {fails > 0
+                    ? "Fix the failing checks below; some agent features may not work until they pass."
+                    : warns > 0
+                      ? "Warnings don’t block anything, but they are worth a look."
+                      : "The kernel, storage and providers all look healthy."}
+                </Callout>
+              );
             })()}
             <div className="rounded-lg border border-border divide-y divide-border">
               {report.checks.map((c, i) => (
@@ -691,7 +829,7 @@ export function LogsPage() {
   }
   return (
     <div>
-      <PageHeader title="Logs" description="Recent kernel log lines." />
+      <PageHeader title="Logs" description="Recent kernel log lines. Filter by level or text, newest first." />
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Input
           value={filter}
@@ -733,7 +871,7 @@ export function LogsPage() {
       </div>
       <QueryState query={query} isEmpty={(d) => d.length === 0} empty={<EmptyState icon={FileText} title="No logs" />}>
         {() => (
-          <pre className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-muted p-3 text-xs leading-relaxed">
+          <pre className="max-h-[70vh] overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs leading-relaxed">
             {shown.length === 0 && <div className="text-muted-foreground">No lines match.</div>}
             {shown.map((l, i) => (
               <div key={i}>
@@ -760,7 +898,7 @@ export function ResourcesPage() {
   const query = useResources();
   return (
     <div>
-      <PageHeader title="System resources" description="Status, hardware, memory, disk, and what is currently locked." />
+      <PageHeader title="Resources" description="Kernel status, hardware, memory, disk and what is currently locked." />
       <div className="mb-4">
         <SystemStatusCards />
       </div>
@@ -773,10 +911,10 @@ export function ResourcesPage() {
                   <CardTitle>Memory</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-2xl font-semibold">
+                  <p className="tnum text-2xl font-semibold tracking-tight">
                     {Math.round(r.mem_used_mb)} / {Math.round(r.mem_total_mb)} MB
                   </p>
-                  <p className="text-xs text-muted-foreground">used / total</p>
+                  <p className="mt-1 text-xs text-muted-foreground">used / total</p>
                 </CardContent>
               </Card>
               <Card>
@@ -784,10 +922,8 @@ export function ResourcesPage() {
                   <CardTitle>Disk</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-2xl font-semibold">
-                    {bytes(r.disk_free_bytes)} free
-                  </p>
-                  <p className="text-xs text-muted-foreground">of {bytes(r.disk_total_bytes)} · {r.data_dir}</p>
+                  <p className="tnum text-2xl font-semibold tracking-tight">{bytes(r.disk_free_bytes)} free</p>
+                  <p className="mt-1 text-xs text-muted-foreground">of {bytes(r.disk_total_bytes)} · {r.data_dir}</p>
                 </CardContent>
               </Card>
             </div>
@@ -798,7 +934,13 @@ export function ResourcesPage() {
               <CardContent>
                 <p className="text-sm text-muted-foreground">
                   {Array.isArray(r.locks) ? `${r.locks.length} active lock(s)` : "—"}
-                  {r.contention ? ` · contention: ${String(r.contention)}` : ""}
+                  {r.contention
+                    ? ` · contention: ${
+                        typeof r.contention === "object"
+                          ? JSON.stringify(r.contention)
+                          : String(r.contention)
+                      }`
+                    : ""}
                 </p>
               </CardContent>
             </Card>
@@ -831,13 +973,18 @@ function CreateKeyDialog() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     const days = Number(ttlDays);
+    const scopeList = scopes
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (scopeList.length === 0) {
+      toast.error("Enter at least one scope", { description: "A key without scopes can do nothing." });
+      return;
+    }
     try {
       const res = await create.mutateAsync({
         name: name.trim(),
-        scopes: scopes
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
+        scopes: scopeList,
         ttl_secs: Number.isFinite(days) && days > 0 ? Math.round(days * 86400) : null,
       });
       setIssued(res.api_key);
@@ -905,19 +1052,19 @@ function CreateKeyDialog() {
             </DialogHeader>
             <div className="space-y-3 py-3">
               <div className="space-y-1">
-                <label className="text-sm font-medium">Name</label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="ci-bot" autoFocus />
+                <label htmlFor="key-name" className="text-sm font-medium">Name</label>
+                <Input id="key-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ci-bot" autoFocus />
               </div>
               <div className="space-y-1">
-                <label className="text-sm font-medium">Scopes (comma-separated)</label>
-                <Input value={scopes} onChange={(e) => setScopes(e.target.value)} placeholder="tasks:r, agents:r" required />
+                <label htmlFor="key-scopes" className="text-sm font-medium">Scopes (comma-separated)</label>
+                <Input id="key-scopes" value={scopes} onChange={(e) => setScopes(e.target.value)} placeholder="tasks:r, agents:r" required />
                 <p className="text-xs text-muted-foreground">
                   <code>resource:op</code> pairs; <code>*:rw</code> = full access.
                 </p>
               </div>
               <div className="space-y-1">
-                <label className="text-sm font-medium">Expires in (days, blank = never)</label>
-                <Input value={ttlDays} onChange={(e) => setTtlDays(e.target.value)} placeholder="30" />
+                <label htmlFor="key-ttl" className="text-sm font-medium">Expires in (days, blank = never)</label>
+                <Input id="key-ttl" value={ttlDays} onChange={(e) => setTtlDays(e.target.value)} placeholder="30" />
               </div>
             </div>
             <DialogFooter>
@@ -992,7 +1139,7 @@ export function KeysPage() {
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       <code>{k.key_id.slice(0, 12)}…</code> · scopes:{" "}
-                      {(k.scopes ?? []).join(", ") || "full access"} · created{" "}
+                      {(k.scopes ?? []).join(", ") || "no scopes (no access)"} · created{" "}
                       {relativeTime(k.created_at)}
                       {k.expires_at
                         ? new Date(k.expires_at).getTime() < Date.now()
@@ -1034,27 +1181,18 @@ export function SystemStatusCards() {
             <CardHeader>
               <CardTitle>Kernel</CardTitle>
             </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
-              <div>
-                <p className="text-xs text-muted-foreground">Version</p>
-                <p className="font-medium">{s.version}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Uptime</p>
-                <p className="font-medium">{Math.floor(s.uptime_secs / 3600)}h {Math.floor((s.uptime_secs % 3600) / 60)}m</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Agents</p>
-                <p className="font-medium">{s.agent_count}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Tasks</p>
-                <p className="font-medium">{s.task_count}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Tools</p>
-                <p className="font-medium">{s.tool_count}</p>
-              </div>
+            <CardContent>
+              <StatGrid min={130}>
+                <Stat size="sm" label="Version" value={<span className="font-mono text-base">{s.version}</span>} />
+                <Stat
+                  size="sm"
+                  label="Uptime"
+                  value={`${Math.floor(s.uptime_secs / 3600)}h ${Math.floor((s.uptime_secs % 3600) / 60)}m`}
+                />
+                <Stat size="sm" label="Agents" value={s.agent_count} />
+                <Stat size="sm" label="Tasks" value={s.task_count} />
+                <Stat size="sm" label="Tools" value={s.tool_count} />
+              </StatGrid>
             </CardContent>
           </Card>
         )}
@@ -1087,7 +1225,7 @@ export function SystemStatusCards() {
                 <p className="mt-2 text-xs text-muted-foreground">
                   <span className="font-medium text-foreground">Pending</span> devices await operator approval
                   before an agent can use them. If an agent already asked, it is in{" "}
-                  <Link to={"/escalations" as string} className="underline">Needs your approval</Link>; otherwise grant
+                  <Link to={"/escalations" as string} className="underline">Approvals</Link>; otherwise grant
                   access from the CLI: <code>agentos hal approve &lt;device-id&gt; --agent &lt;agent-name&gt;</code>.
                 </p>
               )}
@@ -1095,7 +1233,7 @@ export function SystemStatusCards() {
                 <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
                   Raw system snapshot
                 </summary>
-                <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-muted p-3 text-xs">
+                <pre className="mt-2 max-h-48 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
                   {JSON.stringify(h.system, null, 2)}
                 </pre>
               </details>

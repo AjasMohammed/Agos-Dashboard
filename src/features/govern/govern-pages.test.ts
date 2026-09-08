@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { grantWarning, optionLabel, optionVariant, splitByOption } from "./govern-pages";
+import {
+  buildWorkspaceGrantBody,
+  folderGrantWarning,
+  normalizeGrantPath,
+  grantWarning,
+  modeLabel,
+  optionLabel,
+  optionVariant,
+  splitByOption,
+} from "./govern-pages";
 import type { Escalation } from "@/api/models";
 
 const esc = (id: number, options: string[]): Escalation =>
@@ -89,5 +98,90 @@ describe("grantWarning", () => {
     const w = grantWarning("shell-exec", true, true);
     expect(w).toContain("every agent");
     expect(w).toContain("forever");
+  });
+});
+
+describe("folderGrantWarning", () => {
+  it("stays silent for a narrow, agent-scoped project folder", () => {
+    expect(folderGrantWarning("/home/ajas/project", false, "rw")).toBeNull();
+  });
+
+  it("stays silent for ordinary shared directories the CLI grants without a prompt", () => {
+    for (const p of ["/tmp/work", "/srv/data", "/opt/scratch", "/mnt/media"]) {
+      expect(folderGrantWarning(p, false, "rw")).toBeNull();
+    }
+  });
+
+  it("warns on a home-level folder even when scoped to one agent", () => {
+    expect(folderGrantWarning("/home/ajas/Desktop/", false, "rw")).toContain("Desktop");
+  });
+
+  it("warns on the home directory itself and on a filesystem root", () => {
+    expect(folderGrantWarning("/home/ajas", false, "rw")).toContain("everything under");
+    expect(folderGrantWarning("/", false, "rw")).toContain("everything under");
+  });
+
+  it("classifies the path the kernel will store, not the one that was typed", () => {
+    // `lexically_normalize` pops `..` and drops `.` BEFORE the kernel's own `..`
+    // check runs, so these all end up as a whole-home grant. Judging the typed
+    // string let them through with no warning at all.
+    expect(folderGrantWarning("/home/ajas/.", false, "rw")).toContain("everything under /home/ajas");
+    expect(folderGrantWarning("/home/ajas/Desktop/..", false, "rw")).toContain(
+      "everything under /home/ajas",
+    );
+    expect(folderGrantWarning("/home/ajas/./Desktop", false, "rw")).toContain("Desktop");
+    expect(folderGrantWarning("/home//ajas//Desktop/./", false, "rw")).toContain("Desktop");
+  });
+
+  it("recognises home directories that are not /home/<user>", () => {
+    // rpm-ostree/Silverblue, NFS sites, macOS — a segment count alone missed
+    // every one of these while the CLI, which resolves $HOME, prompts.
+    expect(folderGrantWarning("/var/home/ajas/Desktop", false, "rw")).toContain("Desktop");
+    expect(folderGrantWarning("/export/home/ajas", false, "rw")).toContain("everything under");
+    expect(folderGrantWarning("/Users/ajas/Documents", false, "rw")).toContain("Documents");
+  });
+
+  it("states the mode that was actually picked", () => {
+    const ro = folderGrantWarning("/home/ajas", false, "r");
+    expect(ro).toContain("able to read everything");
+    expect(ro).not.toContain("write");
+    expect(folderGrantWarning("/home/ajas", false, "rw")).toContain("read and write");
+    expect(folderGrantWarning("/home/ajas", false, "rwx")).toContain("read, write and run");
+  });
+
+  it("warns whenever the grant covers every agent, however narrow the path", () => {
+    const w = folderGrantWarning("/home/ajas/project", true, "rwx");
+    expect(w).toContain("Every agent");
+    expect(w).toContain("run");
+  });
+});
+
+describe("buildWorkspaceGrantBody", () => {
+  it("drops the all-agents sentinel instead of sending it as an agent name", () => {
+    expect(buildWorkspaceGrantBody(" /srv/data/ ", "r", "*")).toEqual({
+      path: "/srv/data",
+      mode: "r",
+      agent_name: undefined,
+    });
+  });
+
+  it("passes a real agent id through", () => {
+    expect(buildWorkspaceGrantBody("/srv/data", "rwx", "agent-uuid").agent_name).toBe("agent-uuid");
+  });
+});
+
+describe("normalizeGrantPath", () => {
+  it("matches the kernel's lexical normalization", () => {
+    expect(normalizeGrantPath("/home/ajas/project/")).toBe("/home/ajas/project");
+    expect(normalizeGrantPath("/home//ajas/./project")).toBe("/home/ajas/project");
+    expect(normalizeGrantPath("/home/ajas/project/..")).toBe("/home/ajas");
+  });
+});
+
+describe("modeLabel", () => {
+  it("spells out the bits", () => {
+    expect(modeLabel("rwx")).toBe("read + write + run");
+    expect(modeLabel("r")).toBe("read");
+    expect(modeLabel("")).toBe("no access");
   });
 });

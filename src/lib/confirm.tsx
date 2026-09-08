@@ -73,6 +73,8 @@ export function ConfirmDialog() {
   }, [open, options]);
   const cancel = () => settle(isPrompt ? null : false);
   const ok = () => settle(isPrompt ? value.trim() : true);
+  // Never leave a caller's promise hanging if the dialog host unmounts.
+  useEffect(() => () => useConfirmStore.getState().settle(false), []);
   return (
     <Dialog.Root
       open={open}
@@ -81,9 +83,9 @@ export function ConfirmDialog() {
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-6 shadow-lg focus:outline-none">
-          <Dialog.Title className="text-lg font-semibold">{options?.title}</Dialog.Title>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-popover p-5 text-popover-foreground shadow-dialog focus:outline-none data-[state=open]:animate-zoom-in data-[state=closed]:animate-zoom-out">
+          <Dialog.Title className="text-base font-semibold leading-snug tracking-tight">{options?.title}</Dialog.Title>
           {/* Always render a description: Radix warns (a11y) when a dialog has none. */}
           <Dialog.Description
             className={options?.description ? "mt-2 text-sm text-muted-foreground" : "sr-only"}
@@ -107,11 +109,15 @@ export function ConfirmDialog() {
               />
             </form>
           )}
-          <div className="mt-6 flex justify-end gap-2">
+          <div className="mt-5 flex justify-end gap-2">
             <Button variant="outline" onClick={cancel}>
               {options?.cancelLabel ?? "Cancel"}
             </Button>
-            <Button variant={options?.destructive ? "destructive" : "default"} onClick={ok}>
+            <Button
+              variant={options?.destructive ? "destructive" : "default"}
+              disabled={isPrompt && !value.trim()}
+              onClick={ok}
+            >
               {options?.confirmLabel ?? (isPrompt ? "Save" : "Confirm")}
             </Button>
           </div>

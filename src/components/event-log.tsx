@@ -25,7 +25,7 @@ function EventDetailsBody({ details }: { details: string }) {
     <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-[max-content_1fr]">
       {parsed.fields.map((f) => (
         <div key={f.key} className="grid gap-1 sm:contents">
-          <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <dt className="text-xs font-medium text-muted-foreground">
             {f.label}
           </dt>
           <dd className="min-w-0 text-xs text-foreground/90">

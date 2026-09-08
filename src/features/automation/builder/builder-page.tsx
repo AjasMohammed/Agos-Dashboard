@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
   Background,
@@ -53,6 +61,64 @@ const DEFAULT_EDGE_OPTIONS = {
   style: { strokeWidth: 1.5 },
 };
 
+/** Arrow-key nudge, in flow units. Shift multiplies it — see `onNodeKeyDown`. */
+const NUDGE = 10;
+const NUDGE_FACTOR = 5;
+const ARROW_DIRS: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+};
+
+/**
+ * Focus ring for the React Flow-owned node wrapper. It goes on the node's own
+ * `className` (React Flow puts it on the focusable div) rather than a
+ * `[&_.react-flow__node]` variant on the canvas — Tailwind reads `_` inside an
+ * arbitrary variant as a space, so that selector silently compiles to nothing.
+ */
+const NODE_A11Y_CLASSES =
+  "rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background";
+
+/** Keyboard shortcuts, shown on the canvas so the mouse-free path is discoverable. */
+const SHORTCUTS: [string, string][] = [
+  ["Tab", "move between nodes"],
+  ["↑ ↓ ← →", `nudge ${NUDGE}px (Shift: ${NUDGE * NUDGE_FACTOR}px)`],
+  ["Enter / Space", "select — opens the inspector"],
+  ["c then c", "connect: press c on the source, then c on the target"],
+  ["Delete", "remove the node"],
+  ["Esc", "deselect / cancel connecting"],
+];
+
+function ShortcutLegend({ connecting }: { connecting: string | null }) {
+  return (
+    <div className="absolute right-2 top-2 z-10 max-w-64 space-y-1 text-right">
+      {connecting && (
+        // aria-live so a screen reader hears the armed connection, which is
+        // otherwise only visible as a ring on the source node.
+        <p
+          role="status"
+          className="rounded-md border border-primary/50 bg-card px-2 py-1 text-left text-[11px] text-foreground shadow-card"
+        >
+          Connecting from <span className="font-medium">{connecting}</span> — focus the target node
+          and press c again (Esc cancels).
+        </p>
+      )}
+      <details className="inline-block rounded-md border border-border bg-card/90 px-2 py-1 text-left text-[11px] text-muted-foreground shadow-card">
+        <summary className="cursor-pointer select-none">Keyboard shortcuts</summary>
+        <dl className="mt-1 space-y-0.5">
+          {SHORTCUTS.map(([keys, what]) => (
+            <div key={keys} className="flex gap-2">
+              <dt className="w-24 shrink-0 font-mono text-[10px] text-foreground">{keys}</dt>
+              <dd>{what}</dd>
+            </div>
+          ))}
+        </dl>
+      </details>
+    </div>
+  );
+}
+
 interface Draft {
   name: string;
   description: string;
@@ -105,7 +171,10 @@ function AttachedTools({
         </p>
       )}
       {tools.map((t, i) => (
-        <div key={t.id ?? `${t.tool}-${i}`} className="space-y-1 rounded-md border border-border p-2">
+        <div
+          key={t.id ?? `${t.tool}-${i}`}
+          className="space-y-1 rounded-md border border-border p-2"
+        >
           <div className="flex items-center gap-1.5">
             <Wrench className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{t.tool}</span>
@@ -281,6 +350,8 @@ function BuilderCanvas({ editKey }: { editKey?: string }) {
   const [description, setDescription] = useState("");
   const [output, setOutput] = useState("");
   const [loading, setLoading] = useState(Boolean(editKey));
+  // Keyboard connect: `c` on the source node arms this, `c` on a target lands it.
+  const [connectFrom, setConnectFrom] = useState<string | null>(null);
   const originalDoc = useRef<Record<string, unknown>>({});
 
   // Unsaved-work guard. `baseline` is the document as loaded (or as last saved);
@@ -408,14 +479,119 @@ function BuilderCanvas({ editKey }: { editKey?: string }) {
     [selected, setNodes],
   );
 
+  const deleteNodes = useCallback(
+    (nodeIds: string[]) => {
+      const ids = new Set(nodeIds);
+      if (ids.size === 0) return;
+      setNodes((ns) => ns.filter((n) => !ids.has(n.id)));
+      setEdges((es) => es.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
+      setConnectFrom((from) => (from && ids.has(from) ? null : from));
+    },
+    [setNodes, setEdges],
+  );
+
   // Matches the Delete key, which React Flow applies to the whole selection —
   // the inspector button used to silently drop only the first selected node.
-  const deleteSelected = useCallback(() => {
-    const ids = new Set(selectedNodes.map((n) => n.id));
-    if (ids.size === 0) return;
-    setNodes((ns) => ns.filter((n) => !ids.has(n.id)));
-    setEdges((es) => es.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
-  }, [selectedNodes, setNodes, setEdges]);
+  const deleteSelected = useCallback(
+    () => deleteNodes(selectedNodes.map((n) => n.id)),
+    [deleteNodes, selectedNodes],
+  );
+
+  /**
+   * Keyboard path for the canvas (React Flow makes nodes focusable, but its own
+   * key handling only moves nodes that are *selected*, and by 5px).
+   *
+   * Runs in the capture phase on purpose: `stopPropagation` there keeps both the
+   * node wrapper's handler and React Flow's document-level `deleteKeyCode`
+   * listener from acting on the same press, so a key is handled exactly once.
+   */
+  const onNodeKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      // Never swallow keys meant for a text field (no node type has one today,
+      // but a future editable label must keep its arrows and Backspace).
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+
+      // Before the node lookup: focus may be on the canvas, the minimap or the
+      // legend when the user gives up on an armed connection.
+      if (e.key === "Escape") {
+        setConnectFrom(null);
+        return;
+      }
+
+      const id = target?.closest?.(".react-flow__node")?.getAttribute("data-id");
+      if (!id) return;
+
+      const dir = ARROW_DIRS[e.key];
+      if (dir) {
+        e.preventDefault();
+        e.stopPropagation();
+        const step = e.shiftKey ? NUDGE * NUDGE_FACTOR : NUDGE;
+        setNodes((ns) =>
+          ns.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  position: { x: n.position.x + dir[0] * step, y: n.position.y + dir[1] * step },
+                }
+              : n,
+          ),
+        );
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        e.stopPropagation();
+        // The focused node plus anything else selected — same set the inspector's
+        // delete button acts on. The builder has no confirm on delete (a wrong one
+        // is undone by leaving without saving), so don't invent one here.
+        deleteNodes([id, ...selectedNodes.map((n) => n.id)]);
+        return;
+      }
+      // `c` both arms and lands a connection, so Enter keeps its ordinary
+      // meaning (select → inspector). Overloading Enter meant that once a
+      // connection was armed — easy to do by accident — pressing Enter on any
+      // node silently wired an edge instead of opening it.
+      if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        e.stopPropagation();
+        setConnectFrom((from) => {
+          if (from === null) return id;
+          // Same rule as the drag path's `isValidConnection`.
+          if (from !== id) {
+            onConnect({ source: from, target: id, sourceHandle: null, targetHandle: null });
+          }
+          return null;
+        });
+        return;
+      }
+    },
+    [deleteNodes, onConnect, selectedNodes, setNodes],
+  );
+
+  /**
+   * Names each node for assistive tech, and rings the one a connection is armed
+   * from. ponytail: re-mapped every render — same cost profile as `snapshot`.
+   */
+  const flowNodes = useMemo(
+    () =>
+      nodes.map((n) => ({
+        ...n,
+        ariaLabel: `${n.data.kind} step ${n.data.label}${
+          n.id === connectFrom ? ", connecting from here" : ""
+        }`,
+        className: `${NODE_A11Y_CLASSES}${
+          n.id === connectFrom ? " ring-2 ring-primary ring-offset-2 ring-offset-background" : ""
+        }`,
+      })),
+    [nodes, connectFrom],
+  );
 
   async function onSave() {
     const trimmed = name.trim();
@@ -438,9 +614,10 @@ function BuilderCanvas({ editKey }: { editKey?: string }) {
           ...draft,
           // Keep whatever the stored document declared; the spread above would
           // otherwise let a hardcoded 1.0.0 downgrade a 2.3.0 pipeline.
-          version: typeof originalDoc.current.version === "string"
-            ? originalDoc.current.version
-            : undefined,
+          version:
+            typeof originalDoc.current.version === "string"
+              ? originalDoc.current.version
+              : undefined,
         }),
       };
       if (!draft.output.trim()) delete definition.output;
@@ -479,7 +656,7 @@ function BuilderCanvas({ editKey }: { editKey?: string }) {
   const saving = savePipeline.isPending;
 
   return (
-    <div className="-mx-6 flex h-[calc(100vh-3.5rem)] flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
         <Button asChild variant="ghost" size="icon" title="Back">
           <Link to={LIST_PATH}>
@@ -507,7 +684,7 @@ function BuilderCanvas({ editKey }: { editKey?: string }) {
           className="h-8 w-44 font-mono text-xs"
         />
         <div className="ml-auto flex items-center gap-2">
-          <span className="font-mono text-[11px] text-muted-foreground">
+          <span className="tnum text-xs text-muted-foreground">
             {nodes.length} node{nodes.length === 1 ? "" : "s"} · {edges.length} edge
             {edges.length === 1 ? "" : "s"}
             {dirty && " · unsaved"}
@@ -520,9 +697,9 @@ function BuilderCanvas({ editKey }: { editKey?: string }) {
       </div>
       <div className="flex min-h-0 flex-1">
         <Palette groups={palette} onAdd={(item) => addNode(item)} />
-        <div className="relative min-w-0 flex-1">
+        <div className="relative min-w-0 flex-1" onKeyDownCapture={onNodeKeyDown}>
           <ReactFlow
-            nodes={nodes}
+            nodes={flowNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
@@ -546,6 +723,13 @@ function BuilderCanvas({ editKey }: { editKey?: string }) {
             <Controls showInteractive={false} />
             <MiniMap pannable zoomable className="!bg-card" />
           </ReactFlow>
+          <ShortcutLegend
+            connecting={
+              connectFrom
+                ? (nodes.find((n) => n.id === connectFrom)?.data.label ?? connectFrom)
+                : null
+            }
+          />
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center bg-background/60">
               <Loader2 className="size-6 animate-spin text-muted-foreground" />

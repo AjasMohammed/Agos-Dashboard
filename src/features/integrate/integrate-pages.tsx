@@ -28,7 +28,27 @@ import {
   useConnectorDetail,
   useMarketplaceDetail,
   useSubmitReview,
+  marketplaceKeys,
+  useRemovePlugin,
+  usePairings,
+  useApprovePendingPairing,
+  useApprovePairing,
+  useRevokePairing,
+  useTestChannel,
+  useRemoveConnector,
+  useStartConnectorOAuth,
 } from "@/api/queries/extensibility";
+import {
+  AttachMcpDialog,
+  McpCatalogDialog,
+  ConnectChannelDialog,
+  SetChannelAgentDialog,
+  AddPluginDialog,
+  AddConnectorDialog,
+  EditConnectorDialog,
+  EditPluginDialog,
+  StoreCredentialDialog,
+} from "./integrate-dialogs";
 import { useAgents, useAgent, useGrantAgentPermission } from "@/api/queries/agents";
 import {
   EVENT_CATALOG,
@@ -72,12 +92,33 @@ import type {
   WebhookEndpoint,
   EventSubscription,
 } from "@/api/models";
+import { copyText } from "@/lib/clipboard";
+import { Callout } from "@/components/ui/callout";
+import { Checkbox } from "@/components/ui/checkbox";
 
 export function PluginsPage() {
   const query = usePlugins();
   const enable = useTogglePlugin("enable");
   const disable = useTogglePlugin("disable");
+  const remove = useRemovePlugin();
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
+
+  // Removal deletes the manifest from disk. The API permits it only for plugins
+  // the operator installed, so the button is hidden for the bundled ones.
+  async function onRemove(pl: PluginSummary) {
+    const ok = await confirm({
+      title: `Remove ${pl.display_name}?`,
+      description: "Its manifest is deleted from disk. Re-add it by pasting the TOML again.",
+      destructive: true,
+      confirmLabel: "Remove",
+    });
+    if (!ok) return;
+    remove
+      .mutateAsync(pl.id)
+      .then(() => toast.success("Removed"))
+      .catch(toastError);
+  }
 
   // Disabling takes the plugin's channels and tools offline for every agent —
   // too broad a blast radius for an unguarded click.
@@ -108,24 +149,49 @@ export function PluginsPage() {
     {
       key: "actions",
       header: "",
-      cell: (p) =>
-        p.status === "active" ? (
-          <Button variant="ghost" size="sm" onClick={() => onDisable(p)}>
-            Disable
-          </Button>
-        ) : (
-          <Button variant="ghost" size="sm" onClick={() => enable.mutateAsync(p.id).catch(toastError)}>
-            Enable
-          </Button>
-        ),
+      cell: (p) => (
+        <span className="flex justify-end gap-1">
+          {p.status === "active" ? (
+            <Button variant="ghost" size="sm" onClick={() => onDisable(p)}>
+              Disable
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              // A blocked plugin cannot be activated — the kernel refuses it.
+              disabled={p.status === "blocked"}
+              title={p.status === "blocked" ? (p.blocked_reason ?? "Blocked") : undefined}
+              onClick={() => enable.mutateAsync(p.id).catch(toastError)}
+            >
+              Enable
+            </Button>
+          )}
+          {p.user_installed && (
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setEditId(p.id)}>
+                Edit
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => onRemove(p)}>
+                Remove
+              </Button>
+            </>
+          )}
+        </span>
+      ),
     },
   ];
   return (
     <div>
       <PageHeader
         title="Plugins"
-        description="Installed plugin manifests."
-        actions={<DiscoverPluginsButton />}
+        description="Installed plugins and the tools they register with the kernel."
+        actions={
+          <div className="flex items-center gap-2">
+            <DiscoverPluginsButton />
+            <AddPluginDialog />
+          </div>
+        }
       />
       <QueryState
         query={query}
@@ -142,6 +208,120 @@ export function PluginsPage() {
         {(rows) => <DataTable columns={columns} rows={rows} getRowId={(p) => p.id} />}
       </QueryState>
       <PluginDetailDialog id={detailId} onOpenChange={(o) => !o && setDetailId(null)} />
+      <EditPluginDialog id={editId} onOpenChange={(o) => !o && setEditId(null)} />
+    </div>
+  );
+}
+
+/**
+ * DM pairing allowlist. Only rendered once a channel exists — pairing codes are
+ * produced by inbound `/pair` messages, so on a channel-less install the card
+ * would be permanent empty furniture.
+ */
+function PairingsCard({ enabled }: { enabled: boolean }) {
+  const query = usePairings(enabled);
+  const approve = useApprovePairing();
+  const approvePending = useApprovePendingPairing();
+  const revoke = useRevokePairing();
+  const [code, setCode] = useState("");
+  if (!enabled) return null;
+  const data = query.data;
+  if (!data || (data.approved.length === 0 && data.pending.length === 0)) return null;
+  return (
+    <div className="mt-6 rounded-lg border border-border p-4">
+      <p className="font-medium">DM pairing</p>
+      <p className="mb-3 text-sm text-muted-foreground">
+        Senders allowed to talk to your agents over a channel.
+      </p>
+      {data.pending.length > 0 && (
+        <div className="mb-3 space-y-1.5">
+          {data.pending.map((p) => (
+            <div
+              key={`${p.channel_id}:${p.sender_id}`}
+              className="flex items-center justify-between gap-2 text-sm"
+            >
+              <span>
+                <Badge variant="secondary">waiting</Badge>{" "}
+                <code className="text-xs">{p.sender_id}</code>{" "}
+                <span className="text-muted-foreground">expires {relativeTime(p.expires_at)}</span>
+              </span>
+              {/* Approving the row needs no code — see the note below. */}
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={approvePending.isPending}
+                onClick={() =>
+                  approvePending
+                    .mutateAsync({ channel_id: p.channel_id, sender_id: p.sender_id })
+                    .then(() => toast.success("Sender approved"))
+                    .catch(toastError)
+                }
+              >
+                Approve
+              </Button>
+            </div>
+          ))}
+          {/* The pairing code is still not listed: it is the secret a sender who
+              is NOT you must show you, and introspection reaches more callers
+              than approval does. The per-row button above covers the self-pair
+              case (you are the sender, so the code only ever reached the kernel
+              log); this box stays for a code handed to you out of band. */}
+          <form
+            className="flex items-center gap-2 pt-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const value = code.trim().toUpperCase();
+              if (!value) return;
+              approve
+                .mutateAsync(value)
+                .then(() => {
+                  toast.success("Sender approved");
+                  setCode("");
+                })
+                .catch(toastError);
+            }}
+          >
+            <Input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="Pairing code (e.g. 7F3K2Q)"
+              className="max-w-[14rem] font-mono uppercase"
+            />
+            <Button type="submit" size="sm" variant="outline" disabled={approve.isPending || !code.trim()}>
+              Approve
+            </Button>
+          </form>
+        </div>
+      )}
+      <div className="space-y-1.5">
+        {data.approved.map((a) => (
+          <div key={`${a.channel_id}:${a.sender_id}`} className="flex items-center justify-between gap-2 text-sm">
+            <span>
+              <code className="text-xs">{a.label ?? a.sender_id}</code>{" "}
+              <span className="text-muted-foreground">since {relativeTime(a.approved_at)}</span>
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={async () => {
+                const ok = await confirm({
+                  title: `Revoke ${a.label ?? a.sender_id}?`,
+                  description: "They can no longer message your agents on this channel.",
+                  destructive: true,
+                  confirmLabel: "Revoke",
+                });
+                if (!ok) return;
+                revoke
+                  .mutateAsync({ channel_id: a.channel_id, sender_id: a.sender_id })
+                  .then(() => toast.success("Revoked"))
+                  .catch(toastError);
+              }}
+            >
+              Revoke
+            </Button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -149,6 +329,23 @@ export function PluginsPage() {
 export function ChannelsPage() {
   const query = useChannels();
   const disconnect = useDisconnectChannel();
+  const test = useTestChannel();
+  const [agentFor, setAgentFor] = useState<ChannelSummary | null>(null);
+  const [editing, setEditing] = useState<ChannelSummary | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
+
+  // Per-row in-flight id: `test.isPending` would disable Test on every row.
+  async function onTest(c: ChannelSummary) {
+    setTesting(c.id);
+    try {
+      await test.mutateAsync(c.id);
+      toast.success("Test message sent — check the channel");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setTesting(null);
+    }
+  }
   // Name the channel: the operator may have several of the same kind.
   async function onDisconnect(c: ChannelSummary) {
     const ok = await confirm({
@@ -164,12 +361,41 @@ export function ChannelsPage() {
     { key: "kind", header: "Kind", cell: (c) => <Badge variant="muted">{c.kind}</Badge> },
     { key: "name", header: "Name", cell: (c) => <span className="font-medium">{c.display_name}</span> },
     { key: "health", header: "Health", cell: (c) => <StatusBadge status={c.health ?? "unknown"} /> },
+    {
+      key: "agent",
+      header: "Default agent",
+      cell: (c) => (
+        <button className="hover:underline" onClick={() => setAgentFor(c)}>
+          {c.active_agent_name ?? <span className="text-muted-foreground">none</span>}
+        </button>
+      ),
+    },
     { key: "active", header: "Last active", cell: (c) => <span className="text-muted-foreground">{relativeTime(c.last_active)}</span> },
-    { key: "actions", header: "", cell: (c) => <Button variant="ghost" size="sm" onClick={() => onDisconnect(c)}>Disconnect</Button> },
+    {
+      key: "actions",
+      header: "",
+      cell: (c) => (
+        <span className="flex justify-end gap-1">
+          <Button variant="ghost" size="sm" disabled={testing === c.id} onClick={() => void onTest(c)}>
+            {testing === c.id ? "Sending…" : "Test"}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setEditing(c)}>
+            Edit
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => onDisconnect(c)}>
+            Disconnect
+          </Button>
+        </span>
+      ),
+    },
   ];
   return (
     <div>
-      <PageHeader title="Channels" description="Where your assistants can reach you — Slack, Telegram, and friends." />
+      <PageHeader
+        title="Channels"
+        description="Where your assistants can reach you — Slack, Telegram, and friends."
+        actions={<ConnectChannelDialog />}
+      />
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
@@ -177,12 +403,22 @@ export function ChannelsPage() {
           <EmptyState
             icon={Radio}
             title="No channels"
-            description="Connect one from the CLI: `agentos channel connect --kind telegram --display-name <name>` (kinds: telegram, ntfy, email). See `agentos channel --help`."
+            description="Connect one so your assistants can reach you outside this panel."
+            action={<ConnectChannelDialog />}
           />
         }
       >
         {(rows) => <DataTable columns={columns} rows={rows} getRowId={(c) => c.id} />}
       </QueryState>
+      <PairingsCard enabled={(query.data?.length ?? 0) > 0} />
+      <SetChannelAgentDialog channel={agentFor} onOpenChange={(o) => !o && setAgentFor(null)} />
+      {editing && (
+        <ConnectChannelDialog
+          key={editing.id}
+          edit={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }
@@ -190,6 +426,7 @@ export function ChannelsPage() {
 export function McpPage() {
   const query = useMcpServers();
   const detach = useDetachMcp();
+  const [editing, setEditing] = useState<McpServer | null>(null);
 
   // Detaching pulls a whole tool server out from under running tasks.
   async function onDetach(m: McpServer) {
@@ -205,13 +442,47 @@ export function McpPage() {
 
   const columns: Column<McpServer>[] = [
     { key: "name", header: "Name", cell: (m) => <span className="font-medium">{m.name}</span> },
-    { key: "command", header: "Command", cell: (m) => <code className="text-xs text-muted-foreground">{m.command}</code> },
+    {
+      key: "command",
+      header: "Command",
+      // An http server has no command; showing its URL beats an empty cell.
+      cell: (m) => (
+        <code className="text-xs text-muted-foreground">
+          {m.command ? [m.command, ...(m.args ?? [])].join(" ") : (m.url ?? "—")}
+        </code>
+      ),
+    },
+    { key: "tools", header: "Tools", cell: (m) => <span className="text-muted-foreground">{m.tool_count}</span> },
     { key: "state", header: "State", cell: (m) => <StatusBadge status={m.state ?? "unknown"} /> },
-    { key: "actions", header: "", cell: (m) => <Button variant="ghost" size="sm" onClick={() => onDetach(m)}>Detach</Button> },
+    {
+      key: "actions",
+      header: "",
+      cell: (m) => (
+        <span className="flex justify-end gap-1">
+          {(m.command != null || m.url != null) && (
+            <Button variant="ghost" size="sm" onClick={() => setEditing(m)}>
+              Edit
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => onDetach(m)}>
+            Detach
+          </Button>
+        </span>
+      ),
+    },
   ];
   return (
     <div>
-      <PageHeader title="Tool servers (MCP)" description="External tool servers your assistants can call." />
+      <PageHeader
+        title="MCP servers"
+        description="External Model Context Protocol servers whose tools your agents can call."
+        actions={
+          <div className="flex items-center gap-2">
+            <McpCatalogDialog />
+            <AttachMcpDialog />
+          </div>
+        }
+      />
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
@@ -219,12 +490,16 @@ export function McpPage() {
           <EmptyState
             icon={Plug}
             title="No tool servers"
-            description="Attach one from the CLI: `agentos mcp attach <name> -- <command…>` for a local server, or `agentos mcp attach <name> --url <endpoint>` for HTTP. See `agentos mcp --help`."
+            description="Install one from the catalog, or attach your own."
+            action={<McpCatalogDialog />}
           />
         }
       >
         {(rows) => <DataTable columns={columns} rows={rows} getRowId={(m) => m.name} />}
       </QueryState>
+      {editing && (
+        <AttachMcpDialog key={editing.name} edit={editing} onClose={() => setEditing(null)} />
+      )}
     </div>
   );
 }
@@ -232,7 +507,52 @@ export function McpPage() {
 export function ConnectorsPage() {
   const query = useConnectors();
   const disconnect = useDisconnectConnector();
+  const removeConnector = useRemoveConnector();
+  const startOAuth = useStartConnectorOAuth();
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [credentialFor, setCredentialFor] = useState<string | null>(null);
+
+  // The API's OAuth callback bounces the browser back here with the outcome.
+  // Read it once, then strip the params so a refresh doesn't re-toast.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get("oauth");
+    if (!outcome) return;
+    const id = params.get("id") ?? "connector";
+    if (outcome === "ok") toast.success(`Connected ${id}`);
+    else toast.error(params.get("message") ?? `Could not connect ${id}`);
+    params.delete("oauth");
+    params.delete("id");
+    params.delete("message");
+    const qs = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+  }, []);
+
+  async function onRemove(c: ConnectorSummary) {
+    const ok = await confirm({
+      title: `Remove ${c.name}?`,
+      description: "Deletes the manifest and any stored credential. Its tools stop working.",
+      destructive: true,
+      confirmLabel: "Remove",
+    });
+    if (!ok) return;
+    removeConnector
+      .mutateAsync(c.id)
+      .then(() => toast.success("Removed"))
+      .catch(toastError);
+  }
+
+  function onConnect(c: ConnectorSummary) {
+    startOAuth
+      .mutateAsync(c.id)
+      // Same tab: the provider redirects back to the API callback, which
+      // returns the operator here. A popup would be blocked as often as not.
+      .then((r) => {
+        window.location.href = r.authorize_url;
+      })
+      .catch(toastError);
+  }
 
   // Disconnecting drops the stored OAuth token — reconnecting means a full
   // re-authorization with the provider.
@@ -257,14 +577,60 @@ export function ConnectorsPage() {
         </button>
       ),
     },
-    { key: "provider", header: "Provider", cell: (c) => c.provider },
+    { key: "provider", header: "Provider", cell: (c) => c.provider ?? "—" },
     { key: "connected", header: "Status", cell: (c) => <StatusBadge status={c.connected ? "connected" : "offline"} /> },
+    {
+      key: "tools",
+      header: "Tools",
+      // An unregistered row is a provider from oauth_providers.toml with no
+      // manifest — connectable, but it contributes no tools until one is added.
+      cell: (c) =>
+        c.registered ? (
+          <Badge variant="muted">registered</Badge>
+        ) : (
+          <span className="text-xs text-muted-foreground">no manifest</span>
+        ),
+    },
     { key: "scopes", header: "Scopes", cell: (c) => <span className="text-xs text-muted-foreground">{(c.scopes ?? []).join(", ") || "—"}</span> },
-    { key: "actions", header: "", cell: (c) => <Button variant="ghost" size="sm" onClick={() => onDisconnect(c)}>Disconnect</Button> },
+    {
+      key: "actions",
+      header: "",
+      cell: (c) => (
+        <span className="flex justify-end gap-1">
+          {!c.connected && c.oauth_available && (
+            <Button variant="outline" size="sm" disabled={startOAuth.isPending} onClick={() => onConnect(c)}>
+              Connect
+            </Button>
+          )}
+          {!c.connected && (
+            <Button variant="ghost" size="sm" onClick={() => setCredentialFor(c.id)}>
+              Add token
+            </Button>
+          )}
+          {c.connected && (
+            <Button variant="ghost" size="sm" onClick={() => onDisconnect(c)}>
+              Disconnect
+            </Button>
+          )}
+          {c.registered && (
+            <Button variant="ghost" size="sm" onClick={() => setEditId(c.id)}>
+              Edit
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => onRemove(c)}>
+            Remove
+          </Button>
+        </span>
+      ),
+    },
   ];
   return (
     <div>
-      <PageHeader title="Connectors" description="OAuth connectors for external services." />
+      <PageHeader
+        title="Connectors"
+        description="OAuth connectors for external services."
+        actions={<AddConnectorDialog />}
+      />
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
@@ -272,28 +638,23 @@ export function ConnectorsPage() {
           <EmptyState
             icon={Link2}
             title="No connectors"
-            description="Connectors load from connectors/*.toml in the data dir. Store the OAuth credential with `agentos mcp oauth-store <id> --access-token … --token-endpoint …`, then attach with `agentos mcp attach <name> --oauth-connector <id>`."
+            description="Add a connector manifest, or configure an OAuth provider in oauth_providers.toml to connect one."
+            action={<AddConnectorDialog />}
           />
         }
       >
         {(rows) => <DataTable columns={columns} rows={rows} getRowId={(c) => c.id} />}
       </QueryState>
       <ConnectorDetailDialog id={detailId} onOpenChange={(o) => !o && setDetailId(null)} />
+      <EditConnectorDialog id={editId} onOpenChange={(o) => !o && setEditId(null)} />
+      <StoreCredentialDialog
+        connectorId={credentialFor}
+        onOpenChange={(o) => !o && setCredentialFor(null)}
+      />
     </div>
   );
 }
 
-function copyText(text: string, label: string) {
-  // navigator.clipboard is absent in insecure (plain-http, non-localhost) contexts.
-  if (!navigator.clipboard) {
-    toast.error("Copy failed (clipboard unavailable)");
-    return;
-  }
-  navigator.clipboard.writeText(text).then(
-    () => toast.success(`${label} copied`),
-    () => toast.error("Copy failed"),
-  );
-}
 
 /** What create/rotate hand back — the signing secret is in here exactly once. */
 type WebhookIssued = { secret?: string; inbound_url?: string };
@@ -442,7 +803,7 @@ function CreateWebhookDialog() {
                   {WEBHOOK_PROVIDERS.find((p) => p.id === provider)?.hint}
                 </span>
               </label>
-              <Select required value={agent} onChange={(e) => setAgent(e.target.value)}>
+              <Select required aria-label="Target agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
                 <option value="">{agents.data?.length ? "Target agent…" : "No agents"}</option>
                 {(agents.data ?? []).map((a) => (
                   <option key={a.id} value={a.name}>{a.name}</option>
@@ -542,7 +903,7 @@ export function WebhooksPage() {
   ];
   return (
     <div>
-      <PageHeader title="Webhooks" description="Inbound webhook endpoints." actions={<CreateWebhookDialog />} />
+      <PageHeader title="Webhooks" description="Inbound endpoints that turn external HTTP calls into agent tasks." actions={<CreateWebhookDialog />} />
       <QueryState query={query} isEmpty={(d) => d.length === 0} empty={<EmptyState icon={Webhook} title="No webhooks" action={<CreateWebhookDialog />} />}>
         {(rows) => <DataTable columns={columns} rows={rows} getRowId={(w) => String(w.id)} />}
       </QueryState>
@@ -605,33 +966,28 @@ function PermissionNotice({
 
   if (missing.length === 0) {
     return (
-      <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
-        ✓ {agentName} can already observe these events.
-      </p>
+      <Callout tone="success" role="status">
+        {agentName} can already observe these events.
+      </Callout>
     );
   }
 
   return (
-    <div className="grid gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+    <Callout tone="warning" role="status">
       <p>
         {agentName} doesn’t have observe access to{" "}
-        <span className="font-medium">{missing.map(resourceLabel).join(", ")}</span>. The
-        subscription will still trigger {agentName} (operator override), but it won’t be able to see
-        or manage this subscription itself.
+        <span className="font-medium text-foreground">{missing.map(resourceLabel).join(", ")}</span>.
+        The subscription will still trigger {agentName} (operator override), but it won’t be able to
+        see or manage this subscription itself.
       </p>
-      <label className="flex items-start gap-2">
-        <input
-          type="checkbox"
-          checked={grant}
-          onChange={(e) => onGrantChange(e.target.checked)}
-          className="mt-0.5"
-        />
+      <label className="mt-2 flex cursor-pointer items-start gap-2 text-foreground">
+        <Checkbox checked={grant} onChange={(e) => onGrantChange(e.target.checked)} className="mt-0.5" />
         <span>
           Also grant {agentName}:{" "}
-          <code>{missing.map((r) => `${r}:o`).join(", ")}</code>
+          <code className="font-mono">{missing.map((r) => `${r}:o`).join(", ")}</code>
         </span>
       </label>
-    </div>
+    </Callout>
   );
 }
 
@@ -1118,6 +1474,7 @@ export function EventsPage() {
         actions={
           <div className="flex items-center gap-2">
             <Select
+              aria-label="Filter by agent"
               value={agentFilter}
               onChange={(e) => setAgentFilter(e.target.value)}
               className="max-w-[12rem]"
@@ -1168,11 +1525,12 @@ export function MarketplacePage() {
     return () => clearTimeout(t);
   }, [q]);
   const query = useQuery({
-    queryKey: ["marketplace", debouncedQ],
-    queryFn: async () => {
+    queryKey: marketplaceKeys.search(debouncedQ),
+    queryFn: async ({ signal }) => {
       const data = unwrap<unknown>(
         await client.GET("/api/v1/marketplace", {
           params: { query: debouncedQ ? { q: debouncedQ } : {} },
+          signal,
         }),
       );
       return Array.isArray(data) ? data : [];
@@ -1200,7 +1558,7 @@ export function MarketplacePage() {
                 <button
                   key={name || i}
                   disabled={!name}
-                  className="rounded-lg border border-border p-4 text-left transition-colors hover:border-primary/50 disabled:cursor-default disabled:opacity-60"
+                  className="rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-accent/60 disabled:cursor-default disabled:opacity-60"
                   onClick={() => setDetailName(name)}
                 >
                   <p className="font-medium">{name || "Unnamed entry"}</p>
@@ -1256,7 +1614,7 @@ export function SkillsPage() {
           <div className="grid gap-3 sm:grid-cols-2">
             {items.map((s) => (
               <button key={s.name} className="text-left" onClick={() => setSelected(s.name)}>
-                <div className="h-full rounded-lg border border-border p-4 transition-colors hover:border-primary/50">
+                <div className="h-full rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent/60">
                   <div className="flex items-center justify-between gap-2">
                     <p className="min-w-0 truncate font-medium">{s.name}</p>
                     <Badge variant="muted">{s.trust_tier}</Badge>
@@ -1327,7 +1685,7 @@ export function SkillsPage() {
                   <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
                     System prompt
                   </summary>
-                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-surface p-3 font-mono text-xs">
                     {d.system_prompt}
                   </pre>
                 </details>
@@ -1506,7 +1864,7 @@ export function MarketplaceDetailDialog({
         </DialogHeader>
         <QueryState query={detail}>
           {(d) => (
-            <pre className="max-h-56 overflow-auto rounded-md bg-muted p-3 text-xs">
+            <pre className="max-h-56 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
               {JSON.stringify(d, null, 2)}
             </pre>
           )}

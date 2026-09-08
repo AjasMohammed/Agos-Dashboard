@@ -26,6 +26,8 @@ errors, this is almost always the cause — re-export the PATH.
 - **Vite 6 + React 18 + TypeScript** (strict)
 - **TanStack Router** (code-based route tree generated from `src/app/nav.ts`) + **TanStack Query**
 - **Tailwind CSS** + hand-authored shadcn-style primitives (`src/components/ui/*`, Radix under the hood)
+- **Design system:** [`docs/design-system.md`](docs/design-system.md) — tokens, type scale, the
+  primitive to reach for, and the layout rules. Read it before any visual work.
 - **openapi-typescript** + **openapi-fetch** — typed client generated from the vendored contract
 - **Zustand** auth/theme/realtime-status stores · **sonner** toasts
 - **Vitest** unit tests · **Playwright** e2e · **Prism** mock server (`contract/openapi.json`)
@@ -85,6 +87,21 @@ and the four workflow query hooks are gone (~250 lines; recover from git at
 [`docs/workflows-tab-parked.md`](docs/workflows-tab-parked.md)** (full
 rationale + exact re-enable steps).
 
+## UI conventions (read before editing a page)
+
+- **Use the primitives, not class strings.** `PageHeader`, `DataTable`, `Stat`/`StatGrid`,
+  `Callout`, `EmptyState`, `SegmentedControl`, `Field`, `Checkbox`, `DropdownMenu`, `Card`.
+  A bordered `div` with its own radius/tint is a regression — extend a primitive instead.
+- **No decoration.** No gradients, glass/blur, glows, `rounded-2xl`, uppercase letter-spaced
+  eyebrows, entrance animations on content, or `max-w-*` frames around a page. Elevation is
+  only for popovers/dialogs (`shadow-popover`/`shadow-dialog`).
+- **Tokens only.** Colours come from `src/index.css` (`bg-card`, `bg-surface`, `text-muted-
+  foreground`, status hues). Never hardcode a Tailwind palette colour (`emerald-500`, `amber-…`).
+- **Type scale is global.** `text-sm` is 13px, `text-base` 14px (see `tailwind.config.ts`);
+  page titles are `text-xl`, stat values `text-2xl`, numbers get `.tnum`.
+- **Nav is data.** Labels/groups/scopes live in `src/app/nav.ts`; the sidebar, breadcrumb,
+  command palette and route tree all derive from it. The e2e spec pins its shape.
+
 ## Conventions & gotchas (read before editing the API layer)
 
 - **`VITE_API_BASE` is the ORIGIN only** (e.g. `http://localhost:8080`) — the OpenAPI
@@ -106,10 +123,32 @@ rationale + exact re-enable steps).
 - **Scope-gating:** nav items declare a `scope` in `nav.ts`; the sidebar hides un-granted
   items AND `router.tsx` enforces it in `beforeLoad` via `scopeGuard(scope)` (so a section
   can't be reached by typing the URL). `grants()`/`can()` mirror the backend
-  `require_permission` (empty scopes = full access; `*` wildcard; `rw ⊇ r`).
+  `require_permission` (empty scopes = **no** access — fail closed; `*` wildcard; `rw ⊇ r`).
 - **Mutations:** every `mutateAsync` handles its own error (`.catch(toastError)` or
   try/catch). There is intentionally **no** global mutation `onError` in `query.ts` —
   a global one would double-toast.
+- **Request plumbing (`client.ts`):** every typed call gets a 30s deadline merged with the
+  caller's signal — pass TanStack's `signal` from `queryFn` into `client.GET(..., { signal })`
+  for search-as-you-type queries so superseded requests are cancelled. `unwrap` treats 204
+  as success and throws `SHAPE` on a missing envelope; a 2xx that isn't JSON is recast as a
+  502 `BAD_GATEWAY`. `ApiError.retryAfterMs` (from `Retry-After`) drives 429 retries.
+  `errorMessage()` turns `Failed to fetch` / `TimeoutError` into actionable sentences.
+- **Chat stream:** a turn is an ordered list of `StreamPart`s (`text` | `thinking` | `tool`)
+  built in arrival order — never regroup them (tools-then-text was the bug). The kernel's
+  `thinking` frame opens a pass as a bare marker (`{iteration}`) and then streams the model's
+  reasoning as `{iteration, text}` deltas; a pass with no text stays a labelled step and
+  nothing is invented to fill it. Reasoning rides the SAME rAF buffer as `chunk` text (two
+  buffers would let a frame of one overtake the other) and never joins `streamText()` — it is
+  the scratchpad, not the reply. `ApiChatMessage` has no field for it, so the
+  handover would drop it — `turnThinking` keeps the newest turn's reasoning past
+  the refetch (same trick as `turnUsage`), collapsed above the reply. It is still
+  memory-only: a reload, or an older turn, has none. A stream that ends without a `done` frame is an error
+  (truncated reply); a `done` with no chunks falls back to its `answer` (gateway turns);
+  tokens/cost from `done` live in `turnUsage` because `ApiChatMessage` carries neither. A
+  failure KEEPS the partial turn on screen with an error card (message + status/code detail +
+  protocol warnings + Copy details) — never delete the evidence and leave only a toast. The
+  composer is free once a turn is `done`, and parked text after a failure is only restored if
+  the kernel did not already persist that user turn (so there is deliberately no Retry button).
 - **Realtime:** the WS connection (`connection.ts`) is a module singleton driven by the
   auth store (connect on key, drop on logout) with backoff + heartbeat. Chat streaming
   uses the SSE endpoint via `streamChatMessage` (`api/queries/chat.ts`) driven by the
@@ -141,8 +180,13 @@ The contract is vendored at `contract/openapi.json`. After backend changes in `.
 ```bash
 npm run sync-contract        # defaults to ../agos (the sibling monorepo); or API_URL=… to curl a server
 npm run generate             # regenerate src/api/types.gen.ts
+npm run generate:config-hints # ../agos config/default.toml comments -> Config page hints
 npx tsc --noEmit             # catch any drift the new types introduce
 ```
+
+The Config page's per-key descriptions come from the kernel's annotated
+`config/default.toml` (the REST API serves values with no docs), vendored into
+`src/features/system/config-hints.gen.ts` — regenerate after a kernel config change.
 
 ## Skills available here (`.claude/skills/`)
 

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useAgents } from "@/api/queries/agents";
+import { useAuthStore } from "@/auth/store";
 
 /**
  * Agent id (UUID) → display name, backed by the cached agents list.
@@ -10,7 +11,9 @@ import { useAgents } from "@/api/queries/agents";
  * fall back to a shortened id.
  */
 export function useAgentNames(): (id: string | null | undefined) => string | null {
-  const agents = useAgents();
+  // Resolvers mount on pages a key may reach without `agents:r` (dashboard);
+  // don't turn every render into a 403.
+  const agents = useAgents(useAuthStore((s) => s.can("agents:r")));
   const map = useMemo(() => {
     const m = new Map<string, string>();
     for (const a of agents.data ?? []) m.set(String(a.id), a.name);
@@ -23,7 +26,9 @@ export function useAgentNames(): (id: string | null | undefined) => string | nul
 export function agentLabel(name: string | null, id: string | null | undefined): string {
   if (name) return name;
   if (!id) return "—";
-  return `${String(id).slice(0, 8)}…`;
+  const s = String(id);
+  // Only UUIDs get shortened; a name-shaped id is already readable.
+  return s.length >= 32 ? `${s.slice(0, 8)}…` : s;
 }
 
 /** Convenience for components that resolve a single id. */

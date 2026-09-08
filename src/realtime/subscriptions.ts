@@ -20,6 +20,12 @@ interface ChannelState {
 
 const channels = new Map<string, ChannelState>();
 let attached = false;
+/**
+ * Error codes already surfaced. The error frame names no channel, so a refused
+ * subscribe cannot be dropped from `resubscribeAll` — but it can at least stop
+ * re-toasting on every reconnect for the life of the session.
+ */
+const warned = new Set<string>();
 
 function onFrame(frame: ServerFrame) {
   if (frame.type === "subscribed") {
@@ -40,7 +46,8 @@ function onFrame(frame: ServerFrame) {
     // cap, a stale id). Silently swallowing those leaves a green connection
     // badge over a UI that receives nothing — indistinguishable from idle.
     console.warn(`realtime error frame [${frame.code}]: ${frame.message}`);
-    if (frame.code === "FORBIDDEN" || frame.code === "SUBSCRIPTION_LIMIT") {
+    if ((frame.code === "FORBIDDEN" || frame.code === "SUBSCRIPTION_LIMIT") && !warned.has(frame.code)) {
+      warned.add(frame.code);
       // Same id per code so a burst across channels collapses into one toast.
       toast.error(`Live updates unavailable: ${frame.message}`, { id: `ws-${frame.code}` });
     }
@@ -115,6 +122,7 @@ export function subscribe(channel: string, handler: ChannelHandler): () => void 
 export const __test = {
   reset() {
     channels.clear();
+    warned.clear();
     attached = false;
   },
   activeChannels: () => [...channels.keys()],

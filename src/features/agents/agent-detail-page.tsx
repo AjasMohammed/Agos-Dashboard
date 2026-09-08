@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, Trash2 } from "lucide-react";
+import { ArrowLeft, PowerOff, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   useAgent,
@@ -12,7 +12,7 @@ import {
   useAgentScratchpad,
   useDeleteAgentScratchPage,
   useDisconnectAgent,
-  useGrantPermission,
+  useRemoveAgent,
   useRevokePermission,
   useSaveAgentScratchPage,
   type MemoryTier,
@@ -32,6 +32,8 @@ import { relativeTime, tokens, usd } from "@/lib/format";
 import { formatDuration } from "@/lib/task-duration";
 import { useDirtyGuard } from "@/lib/use-dirty-guard";
 import { AgentSettingsDialog } from "./agent-settings-dialog";
+import { GrantPermissionDialog } from "./grant-permission-dialog";
+import { SegmentedControl } from "@/components/ui/segmented";
 
 /**
  * `cost_snapshot` is typed as an opaque object in the contract; this mirrors
@@ -88,7 +90,7 @@ function CostSnapshotView({ snapshot }: { snapshot: object }) {
         <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
           Raw JSON
         </summary>
-        <pre className="mt-2 overflow-auto rounded-md bg-muted p-3 text-xs">
+        <pre className="mt-2 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
           {JSON.stringify(snapshot, null, 2)}
         </pre>
       </details>
@@ -120,16 +122,12 @@ function MemoryBrowser({ name }: { name: string }) {
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          {MEMORY_TIERS.map((t) => (
-            <Button
-              key={t.tier}
-              size="sm"
-              variant={tier === t.tier ? "default" : "outline"}
-              onClick={() => setTier(t.tier)}
-            >
-              {t.label}
-            </Button>
-          ))}
+          <SegmentedControl
+            aria-label="Memory tier"
+            options={MEMORY_TIERS.map((t) => ({ value: t.tier, label: t.label }))}
+            value={tier}
+            onChange={setTier}
+          />
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -230,9 +228,8 @@ export function AgentDetailPage() {
   const query = useAgent(name);
   const identity = useAgentIdentity(name);
   const disconnect = useDisconnectAgent();
-  const grant = useGrantPermission(name);
+  const remove = useRemoveAgent();
   const revoke = useRevokePermission(name);
-  const [newPerm, setNewPerm] = useState("");
 
   async function onDisconnect() {
     // A second click while the DELETE is in flight 404s and lands a red toast
@@ -240,7 +237,7 @@ export function AgentDetailPage() {
     if (disconnect.isPending) return;
     const ok = await confirm({
       title: `Disconnect ${name}?`,
-      description: `${name} will be removed from the registry and stop accepting work.`,
+      description: `${name} stops accepting work and its provider connection is released. The profile is kept, so reconnecting reuses the same identity and memories.`,
       destructive: true,
       confirmLabel: "Disconnect",
     });
@@ -248,6 +245,26 @@ export function AgentDetailPage() {
     try {
       await disconnect.mutateAsync(name);
       toast.success(`Disconnected ${name}`);
+      navigate({ to: "/agents" });
+    } catch (e) {
+      toastError(e);
+    }
+  }
+
+  async function onRemove() {
+    if (remove.isPending) return; // same double-submit guard as Disconnect
+    const ok = await confirm({
+      title: `Remove ${name} permanently?`,
+      description:
+        `Deletes ${name}'s profile, identity, memories, scratchpad, inbox, checkpoints and schedules. ` +
+        "Stored credentials and the audit log are kept. This cannot be undone.",
+      destructive: true,
+      confirmLabel: "Remove permanently",
+    });
+    if (!ok) return;
+    try {
+      await remove.mutateAsync(name);
+      toast.success(`Removed ${name}`);
       navigate({ to: "/agents" });
     } catch (e) {
       toastError(e);
@@ -266,18 +283,6 @@ export function AgentDetailPage() {
     try {
       await revoke.mutateAsync(permission);
       toast.success(`Revoked ${permission}`);
-    } catch (e) {
-      toastError(e);
-    }
-  }
-
-  async function onGrant() {
-    const p = newPerm.trim();
-    if (!p) return;
-    try {
-      await grant.mutateAsync(p);
-      setNewPerm("");
-      toast.success(`Granted ${p}`);
     } catch (e) {
       toastError(e);
     }
@@ -304,12 +309,17 @@ export function AgentDetailPage() {
                 actions={
                   <>
                     <AgentSettingsDialog name={name} />
+                    {/* Disconnect is rejected by the kernel once the agent is
+                        already offline — Remove is the action that still applies. */}
                     <Button
-                      variant="destructive"
+                      variant="outline"
                       onClick={onDisconnect}
-                      disabled={disconnect.isPending}
+                      disabled={disconnect.isPending || a.status === "offline"}
                     >
-                      <Trash2 /> Disconnect
+                      <PowerOff /> Disconnect
+                    </Button>
+                    <Button variant="destructive" onClick={onRemove} disabled={remove.isPending}>
+                      <Trash2 /> Remove
                     </Button>
                   </>
                 }
@@ -343,28 +353,15 @@ export function AgentDetailPage() {
 
               <div className="grid gap-6 lg:grid-cols-2">
                 <Card>
-                  <CardHeader>
+                  <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
                     <CardTitle>Permissions</CardTitle>
+                    <GrantPermissionDialog name={name} granted={detail.permissions} />
                   </CardHeader>
                   <CardContent>
-                    <div className="mb-3 flex gap-2">
-                      <Input
-                        value={newPerm}
-                        onChange={(e) => setNewPerm(e.target.value)}
-                        placeholder="fs:read:/data"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            void onGrant();
-                          }
-                        }}
-                      />
-                      <Button onClick={onGrant} disabled={!newPerm.trim() || grant.isPending}>
-                        Grant
-                      </Button>
-                    </div>
                     {detail.permissions.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No permissions granted.</p>
+                      <p className="text-sm text-muted-foreground">
+                        No permissions granted. Use Grant to see what {name} can be given.
+                      </p>
                     ) : (
                       <ul className="space-y-1">
                         {detail.permissions.map((p) => (

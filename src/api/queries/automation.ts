@@ -70,7 +70,10 @@ export function useDeleteSchedule() {
     mutationFn: async (id: string) => {
       unwrap(await client.DELETE("/api/v1/schedules/{id}", { params: { path: { id } } }));
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: scheduleKeys.all }),
+    onSuccess: (_res, id) => {
+      qc.removeQueries({ queryKey: scheduleKeys.runs(id) });
+      return qc.invalidateQueries({ queryKey: scheduleKeys.all });
+    },
   });
 }
 

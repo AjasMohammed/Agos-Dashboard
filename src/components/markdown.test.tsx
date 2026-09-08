@@ -30,6 +30,47 @@ describe("Markdown", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("renders inline math", () => {
+    const { container } = render(<Markdown>{"mass–energy: $$E = mc^2$$, neat"}</Markdown>);
+    expect(container.querySelector(".katex")).not.toBeNull();
+    expect(container.querySelector(".katex-display")).toBeNull();
+  });
+
+  it("renders LaTeX-delimited inline math", () => {
+    const { container } = render(<Markdown>{"the sum \\(a + b\\) is small"}</Markdown>);
+    expect(container.querySelector(".katex")).not.toBeNull();
+    // The delimiters must not survive as literal text.
+    expect(container.textContent).not.toContain("\\(");
+  });
+
+  it("renders display math", () => {
+    const { container } = render(<Markdown>{"$$\n\\frac{1}{2}\n$$"}</Markdown>);
+    expect(container.querySelector(".katex-display")).not.toBeNull();
+  });
+
+  it("renders a \\[…\\] block as display math", () => {
+    const { container } = render(<Markdown>{"before\n\n\\[\\frac{1}{2}\\]\n\nafter"}</Markdown>);
+    expect(container.querySelector(".katex-display")).not.toBeNull();
+  });
+
+  it("shows malformed math as an error instead of throwing", () => {
+    const { container } = render(<Markdown>{"$$\\frac{1}{$$"}</Markdown>);
+    // throwOnError: false — a bad formula is red text, not a dead transcript.
+    expect(container.querySelector(".katex-error")).not.toBeNull();
+  });
+
+  it("leaves money alone (single dollars are not math)", () => {
+    const { container } = render(<Markdown>{"it costs $5 and $10 today"}</Markdown>);
+    expect(container.querySelector(".katex")).toBeNull();
+    expect(container.textContent).toBe("it costs $5 and $10 today");
+  });
+
+  it("does not treat math delimiters inside code as math", () => {
+    const { container } = render(<Markdown>{"`\\(not math\\)`"}</Markdown>);
+    expect(container.querySelector(".katex")).toBeNull();
+    expect(container.querySelector("code")?.textContent).toBe("\\(not math\\)");
+  });
+
   it("does not parse raw HTML (no rehype-raw)", () => {
     const { container } = render(
       <Markdown>{'<img src="https://evil.tld/y.png" onerror="alert(1)">'}</Markdown>,

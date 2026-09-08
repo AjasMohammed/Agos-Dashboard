@@ -4,6 +4,7 @@ import {
   ListTodo,
   Wrench,
   MessagesSquare,
+  MessageSquareText,
   Workflow,
   CalendarClock,
   ShieldAlert,
@@ -20,6 +21,7 @@ import {
   Webhook,
   Activity,
   FolderOpen,
+  FolderLock,
   DollarSign,
   Settings,
   Stethoscope,
@@ -29,9 +31,8 @@ import {
   NotebookPen,
   Store,
   Sparkles,
-  Activity as ActivityIcon,
-  type LucideIcon,
   LayoutTemplate,
+  type LucideIcon,
 } from "lucide-react";
 
 export interface NavItem {
@@ -40,7 +41,7 @@ export interface NavItem {
   icon: LucideIcon;
   /** Read scope gating visibility; omitted = always shown. */
   scope?: string;
-  /** Shown at the top of the sidebar; everything else folds under "More". */
+  /** Lives in the always-open Workspace section; everything else sits in a foldable group. */
   primary?: boolean;
 }
 
@@ -49,37 +50,42 @@ export interface NavGroup {
   items: NavItem[];
 }
 
-/** The single source of truth for the sidebar nav and the generated route tree. */
+/**
+ * The single source of truth for the sidebar, the command palette, the topbar
+ * breadcrumb and the generated route tree. Labels are short nouns an operator
+ * can scan; each page explains itself in its own header.
+ */
 export const NAV: NavGroup[] = [
   {
-    label: "Operate",
+    label: "Workspace",
     items: [
-      // Chat is the home surface; the dashboard is one click away.
+      // Chat is the home surface.
       { label: "Chat", to: "/", icon: MessagesSquare, scope: "chat:r", primary: true },
-      { label: "Activity", to: "/activity", icon: ActivityIcon, scope: "tasks:r", primary: true },
-      { label: "Agents", to: "/agents", icon: Bot, scope: "agents:r", primary: true },
-      { label: "Tasks", to: "/tasks", icon: ListTodo, scope: "tasks:r" },
+      { label: "Activity", to: "/activity", icon: Activity, scope: "tasks:r", primary: true },
       { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard, primary: true },
-      { label: "Tools", to: "/tools", icon: Wrench, scope: "tools:r" },
-      { label: "Agent chats", to: "/agent-chats", icon: Bot, scope: "agents:r" },
+      { label: "Agents", to: "/agents", icon: Bot, scope: "agents:r", primary: true },
+      { label: "Tasks", to: "/tasks", icon: ListTodo, scope: "tasks:r", primary: true },
+      { label: "Tools", to: "/tools", icon: Wrench, scope: "tools:r", primary: true },
+      { label: "Approvals", to: "/escalations", icon: ShieldAlert, scope: "escalations:r", primary: true },
     ],
   },
   {
     label: "Automate",
     items: [
       { label: "Pipelines", to: "/pipelines", icon: Workflow, scope: "pipelines:r" },
-      { label: "Schedules", to: "/schedules", icon: CalendarClock, scope: "schedules:r", primary: true },
+      { label: "Schedules", to: "/schedules", icon: CalendarClock, scope: "schedules:r" },
+      { label: "Agent chats", to: "/agent-chats", icon: MessageSquareText, scope: "agents:r" },
     ],
   },
   {
     label: "Govern",
     items: [
-      { label: "Needs your approval", to: "/escalations", icon: ShieldAlert, scope: "escalations:r", primary: true },
-      { label: "Always allow", to: "/approval-policies", icon: ShieldCheck, scope: "approvals:r" },
+      { label: "Standing grants", to: "/approval-policies", icon: ShieldCheck, scope: "approvals:r" },
       { label: "Notifications", to: "/notifications", icon: BellRing, scope: "notifications:r" },
-      { label: "What I've learned about you", to: "/prefs", icon: SlidersHorizontal, scope: "prefs:r" },
-      { label: "Permission sets", to: "/roles", icon: KeyRound, scope: "roles:r" },
-      { label: "Audit", to: "/audit", icon: ScrollText, scope: "audit:r" },
+      { label: "Preferences", to: "/prefs", icon: SlidersHorizontal, scope: "prefs:r" },
+      { label: "Folder access", to: "/workspace-grants", icon: FolderLock, scope: "workspace:r" },
+      { label: "Roles", to: "/roles", icon: KeyRound, scope: "roles:r" },
+      { label: "Audit log", to: "/audit", icon: ScrollText, scope: "audit:r" },
     ],
   },
   {
@@ -87,7 +93,7 @@ export const NAV: NavGroup[] = [
     items: [
       { label: "Plugins", to: "/plugins", icon: Puzzle, scope: "plugins:r" },
       { label: "Channels", to: "/channels", icon: Radio, scope: "channels:r" },
-      { label: "Tool servers (MCP)", to: "/mcp", icon: Plug, scope: "mcp:r" },
+      { label: "MCP servers", to: "/mcp", icon: Plug, scope: "mcp:r" },
       { label: "Connectors", to: "/connectors", icon: Link2, scope: "connectors:r" },
       { label: "Webhooks", to: "/webhooks", icon: Webhook, scope: "webhooks:r" },
       { label: "Events", to: "/events", icon: Activity, scope: "events:r" },
@@ -100,14 +106,14 @@ export const NAV: NavGroup[] = [
     items: [
       { label: "Artifacts", to: "/artifacts", icon: LayoutTemplate, scope: "files:r" },
       { label: "Files", to: "/files", icon: FolderOpen, scope: "files:r" },
-      { label: "Agent notes", to: "/scratchpad", icon: NotebookPen, scope: "scratchpad:r" },
-      { label: "API keys & credentials", to: "/secrets", icon: Lock, scope: "secrets:r" },
+      { label: "Scratchpad", to: "/scratchpad", icon: NotebookPen, scope: "scratchpad:r" },
+      { label: "Secrets", to: "/secrets", icon: Lock, scope: "secrets:r" },
       { label: "API keys", to: "/keys", icon: KeySquare, scope: "keys:r" },
       { label: "Costs", to: "/costs", icon: DollarSign, scope: "costs:r" },
       { label: "Config", to: "/config", icon: Settings, scope: "config:r" },
-      { label: "Health check", to: "/doctor", icon: Stethoscope, scope: "doctor:r" },
+      { label: "Doctor", to: "/doctor", icon: Stethoscope, scope: "doctor:r" },
       { label: "Logs", to: "/logs", icon: FileText, scope: "logs:r" },
-      { label: "System resources", to: "/resources", icon: Cpu, scope: "resources:r" },
+      { label: "Resources", to: "/resources", icon: Cpu, scope: "resources:r" },
     ],
   },
 ];
@@ -115,11 +121,17 @@ export const NAV: NavGroup[] = [
 /** Flat list of every feature route (used to generate the router tree). */
 export const NAV_ITEMS: NavItem[] = NAV.flatMap((g) => g.items);
 
-/** Sidebar top section, in NAV order. */
+/** Always-visible Workspace section, in NAV order. */
 export const PRIMARY_NAV: NavItem[] = NAV_ITEMS.filter((i) => i.primary);
 
-/** Everything else, grouped — folded under "More" in the sidebar. */
+/** Everything else, grouped — foldable sections in the sidebar. */
 export const MORE_NAV: NavGroup[] = NAV.map((g) => ({
   ...g,
   items: g.items.filter((i) => !i.primary),
 })).filter((g) => g.items.length > 0);
+
+/** True when `pathname` is this item's page or one of its sub-routes. */
+export function isNavActive(item: Pick<NavItem, "to">, pathname: string): boolean {
+  if (item.to === "/") return pathname === "/";
+  return pathname === item.to || pathname.startsWith(`${item.to}/`);
+}

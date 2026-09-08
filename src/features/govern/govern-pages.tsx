@@ -4,9 +4,19 @@
    page; they carry no component state. */
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { ShieldAlert, KeyRound, SlidersHorizontal, ScrollText, Info } from "lucide-react";
+import {
+  ShieldAlert,
+  KeyRound,
+  SlidersHorizontal,
+  ScrollText,
+  Info,
+  ChevronRight,
+  FolderLock,
+} from "lucide-react";
+import { useInvalidateOnEvent } from "@/realtime/cacheBridge";
 import {
   useEscalations,
+  escalationKeys,
   useResolveEscalation,
   useRoles,
   useCreateRole,
@@ -20,12 +30,17 @@ import {
   useRevokeApprovalPolicy,
   useVerifyAudit,
   useAuditTrace,
+  useWorkspaceGrants,
+  useGrantWorkspace,
+  useRevokeWorkspaceGrant,
 } from "@/api/queries/governance";
 import {
   useNotifications,
   useDismissNotification,
   useRespondNotification,
   useClearReadNotifications,
+  useClearAllNotifications,
+  useMarkAllNotificationsRead,
 } from "@/api/queries/notifications";
 import { useAgents } from "@/api/queries/agents";
 import { PageHeader } from "@/components/page-header";
@@ -63,7 +78,13 @@ import type {
   NotificationSummary,
   Role,
   PrefProposal,
+  WorkspaceGrant,
+  GrantWorkspaceBody,
 } from "@/api/models";
+import { Stat, StatGrid } from "@/components/ui/stat";
+import { Callout } from "@/components/ui/callout";
+import { SegmentedControl } from "@/components/ui/segmented";
+import { useDebounced } from "@/lib/use-debounced";
 
 /**
  * Add/remove ids in a per-row in-flight (or selection) `Set`. Rows track their
@@ -157,6 +178,18 @@ export function bulkEffectCopy(decision: string, count: number): string {
 
 export function EscalationsPage() {
   const query = useEscalations();
+  const canRead = useAuthStore((s) => s.can("escalations:r"));
+  // The kernel pushes escalation.created/resolved/expired on this channel, so a
+  // new approval lands as fast as the operator's push notification did. The 5s
+  // poll in `useEscalations` stays as the fallback for a dropped socket.
+  // `escalationKeys.all` is a prefix of `.pending`, so this refreshes the
+  // sidebar badge's cache entry too. Scope-gated because the route itself is
+  // not: reaching this URL with a key lacking `escalations:r` would draw a
+  // FORBIDDEN frame, and that latches the "live updates unavailable" toast off
+  // for every other channel for the rest of the session.
+  useInvalidateOnEvent(canRead ? "escalations" : null, [escalationKeys.all], {
+    debounceMs: 300,
+  });
   const resolve = useResolveEscalation();
   const agentName = useAgentNames();
   // Per-row in-flight set so one decision only disables its own row's buttons
@@ -253,7 +286,7 @@ export function EscalationsPage() {
 
   return (
     <div>
-      <PageHeader title="Needs your approval" description="Actions an assistant wants to take that need your OK." />
+      <PageHeader title="Approvals" description="Actions an agent wants to take that need your OK. Approve, deny, or grant standing permission." />
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
@@ -267,7 +300,7 @@ export function EscalationsPage() {
           return (
             <div className="space-y-5">
               {selected.size > 0 && (
-                <div className="sticky top-0 z-10 flex items-center gap-2 rounded-md border border-border bg-background/95 p-2 shadow-sm backdrop-blur">
+                <div className="sticky top-0 z-10 flex items-center gap-2 rounded-md border border-border bg-card p-2">
                   <span className="text-sm text-muted-foreground">{selected.size} selected</span>
                   {/* Disabled while any resolve is in flight — a second click would
                       re-fire the same (or a conflicting) decision for the same ids. */}
@@ -427,7 +460,7 @@ function sortFlags(flags: string): string {
 
 function GroupHeader({ children }: { children: React.ReactNode }) {
   return (
-    <p className="sticky top-0 border-b border-border bg-muted/80 px-3 py-1 text-xs font-medium text-muted-foreground backdrop-blur-sm">
+    <p className="sticky top-0 border-b border-border bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
       {children}
     </p>
   );
@@ -693,7 +726,7 @@ export function RolesPage() {
   ];
   return (
     <div>
-      <PageHeader title="Permission sets" description="Named bundles of permissions you can give an assistant." actions={<CreateRoleDialog />} />
+      <PageHeader title="Roles" description="Named permission bundles you can assign to agents." actions={<CreateRoleDialog />} />
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
@@ -730,24 +763,20 @@ export function PreferencesPage() {
   }
   return (
     <div>
-      <PageHeader title="What I've learned about you" description="Things assistants noticed about how you work — approve to keep, dismiss to forget." />
+      <PageHeader title="Preferences" description="Things agents noticed about how you work. Accept to keep them, reject to forget." />
       {stats.data && (
-        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-          {(
-            [
-              ["Proposed", stats.data.proposed],
-              ["Pending", stats.data.pending],
-              ["Accepted", stats.data.accepted],
-              ["Rejected", stats.data.rejected],
-              ["Expired", stats.data.expired],
-            ] as const
-          ).map(([k, v]) => (
-            <div key={k} className="rounded-md border border-border p-3">
-              <p className="text-xl font-semibold">{v}</p>
-              <p className="text-xs text-muted-foreground">{k}</p>
-            </div>
-          ))}
-        </div>
+        <StatGrid min={130} className="mb-4">
+          <Stat size="sm" label="Proposed" value={stats.data.proposed} />
+          <Stat
+            size="sm"
+            label="Pending"
+            value={stats.data.pending}
+            tone={stats.data.pending > 0 ? "warning" : undefined}
+          />
+          <Stat size="sm" label="Accepted" value={stats.data.accepted} tone="success" />
+          <Stat size="sm" label="Rejected" value={stats.data.rejected} />
+          <Stat size="sm" label="Expired" value={stats.data.expired} />
+        </StatGrid>
       )}
       <QueryState
         query={proposals}
@@ -872,7 +901,7 @@ function TraceLookup() {
                 </p>
                 {d.details && <p className="whitespace-pre-wrap text-sm">{d.details}</p>}
                 {d.metadata != null && (
-                  <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 text-xs">
+                  <pre className="max-h-48 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
                     {JSON.stringify(d.metadata, null, 2)}
                   </pre>
                 )}
@@ -885,23 +914,78 @@ function TraceLookup() {
   );
 }
 
+const AUDIT_LIMITS = [100, 250, 500, 1000] as const;
+
 export function AuditPage() {
-  const query = useAuditLogs();
+  const agents = useAgents();
+  const [eventType, setEventType] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [limit, setLimit] = useState<number>(AUDIT_LIMITS[0]);
+  const debouncedType = useDebounced(eventType.trim(), 300);
+  const query = useAuditLogs({ event_type: debouncedType, agent_id: agentId, limit });
+  const filtering = Boolean(debouncedType || agentId);
   return (
     <div>
       <PageHeader
-        title="Audit"
-        description="Append-only audit trail."
+        title="Audit log"
+        description="Append-only record of every kernel action, with hash-chain verification."
         actions={<VerifyChainButton />}
       />
       <TraceLookup />
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Input
+          type="search"
+          value={eventType}
+          onChange={(e) => setEventType(e.target.value)}
+          placeholder="Filter by event type, e.g. TaskCompleted"
+          aria-label="Filter by event type"
+          spellCheck={false}
+          className="w-full sm:w-72"
+        />
+        <Select
+          aria-label="Filter by agent"
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          className="w-full sm:w-48"
+        >
+          <option value="">All agents</option>
+          {(agents.data ?? []).map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </Select>
+        <Select
+          aria-label="Number of entries"
+          value={String(limit)}
+          onChange={(e) => setLimit(Number(e.target.value))}
+          className="w-full sm:w-36"
+        >
+          {AUDIT_LIMITS.map((n) => (
+            <option key={n} value={n}>
+              Last {n}
+            </option>
+          ))}
+        </Select>
+        {query.isFetching && query.data && (
+          <span className="text-xs text-muted-foreground" role="status">
+            Updating…
+          </span>
+        )}
+      </div>
       <QueryState
         query={query}
         isEmpty={(d) => d.length === 0}
-        empty={<EmptyState icon={ScrollText} title="No audit entries" />}
+        empty={
+          <EmptyState
+            icon={ScrollText}
+            title={filtering ? "No entries match" : "No audit entries"}
+            description={filtering ? "Try a different event type or agent." : undefined}
+          />
+        }
       >
         {(items) => (
-          <div className="rounded-lg border border-border px-3">
+          <div className="rounded-lg border border-border bg-card px-3">
             <AuditRows entries={items} />
           </div>
         )}
@@ -1042,8 +1126,9 @@ function AddGrantDialog() {
           </DialogHeader>
           <div className="space-y-3 py-3">
             <div className="space-y-1">
-              <label className="text-sm font-medium">Tool name</label>
+              <label htmlFor="grant-tool" className="text-sm font-medium">Tool name</label>
               <Input
+                id="grant-tool"
                 value={tool}
                 onChange={(e) => setTool(e.target.value)}
                 placeholder="e.g. shell-exec"
@@ -1072,8 +1157,9 @@ function AddGrantDialog() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium">Path glob (optional)</label>
+              <label htmlFor="grant-path" className="text-sm font-medium">Path glob (optional)</label>
               <Input
+                id="grant-path"
                 value={pathGlob}
                 onChange={(e) => setPathGlob(e.target.value)}
                 placeholder="e.g. /tmp/**"
@@ -1084,24 +1170,17 @@ function AddGrantDialog() {
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium">Expires</label>
-              <div className="flex flex-wrap gap-1.5">
-                {GRANT_TTLS.map((t) => (
-                  <Button
-                    key={t.label}
-                    type="button"
-                    size="sm"
-                    variant={ttlHours === t.hours ? "default" : "outline"}
-                    onClick={() => setTtlHours(t.hours)}
-                  >
-                    {t.label}
-                  </Button>
-                ))}
-              </div>
+              <SegmentedControl
+                aria-label="Expires"
+                options={GRANT_TTLS.map((t) => ({ value: String(t.hours ?? "never"), label: t.label }))}
+                value={String(ttlHours ?? "never")}
+                onChange={(v) => setTtlHours(v === "never" ? null : Number(v))}
+              />
             </div>
             {warning && (
-              <p className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+              <Callout tone="warning" role="status">
                 {warning}
-              </p>
+              </Callout>
             )}
           </div>
           <DialogFooter>
@@ -1150,8 +1229,8 @@ export function StandingGrantsPage() {
   return (
     <div>
       <PageHeader
-        title="Always allow"
-        description="Persisted allow-always approvals — tool calls matching a grant skip the escalation queue until it expires."
+        title="Standing grants"
+        description="Approvals that persist: tool calls matching a grant skip the approval queue until the grant expires."
         actions={canWrite ? <AddGrantDialog /> : null}
       />
       <QueryState
@@ -1270,10 +1349,14 @@ export function NotificationsPage() {
   const query = useNotifications();
   const dismiss = useDismissNotification();
   const clearRead = useClearReadNotifications();
+  const clearAll = useClearAllNotifications();
+  const markAllRead = useMarkAllNotificationsRead();
   const [respondTo, setRespondTo] = useState<NotificationSummary | null>(null);
   const sender = useSenderLabel();
   // Per-row in-flight set — `dismiss.isPending` disabled Dismiss on every row.
   const [dismissing, setDismissing] = useState<ReadonlySet<string>>(new Set());
+  // Bodies stay collapsed until the operator asks for one.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 
   async function onDismiss(id: string) {
     setDismissing((prev) => withIds(prev, [id], true));
@@ -1306,20 +1389,53 @@ export function NotificationsPage() {
     }
   }
 
+  async function onClearAll() {
+    if (
+      !(await confirm({
+        title: "Clear all notifications?",
+        description:
+          "Deletes every notification, read or not. Questions an agent is still blocked on survive. This cannot be undone.",
+        destructive: true,
+        confirmLabel: "Clear all",
+      }))
+    )
+      return;
+    try {
+      await clearAll.mutateAsync();
+      toast.success("Notifications cleared");
+    } catch (e) {
+      toastError(e);
+    }
+  }
+
+  async function onMarkAllRead() {
+    try {
+      await markAllRead.mutateAsync();
+      toast.success("All marked read");
+    } catch (e) {
+      toastError(e);
+    }
+  }
+
+  const busy = clearRead.isPending || clearAll.isPending || markAllRead.isPending;
+
   return (
     <div>
       <PageHeader
         title="Notifications"
-        description="Operator inbox — agent questions, alerts, and channel messages."
+        description="Your inbox: agent questions, alerts and channel messages."
         actions={
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={clearRead.isPending}
-            onClick={() => void onClearRead()}
-          >
-            Clear read
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void onMarkAllRead()}>
+              Mark all read
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void onClearRead()}>
+              Clear read
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void onClearAll()}>
+              Clear all
+            </Button>
+          </div>
         }
       />
       <QueryState
@@ -1329,54 +1445,444 @@ export function NotificationsPage() {
       >
         {(items) => (
           <div className="space-y-2">
-            {items.map((n) => (
-              <Card key={n.id} className={n.read ? "opacity-70" : undefined}>
-                <CardContent className="flex flex-wrap items-start justify-between gap-3 p-4">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">{n.subject}</p>
-                      {!n.read && <Badge variant="secondary">new</Badge>}
-                      {n.priority && n.priority !== "normal" && (
-                        <Badge
-                          variant="secondary"
-                          className={
-                            n.priority === "critical" || n.priority === "high"
-                              ? "bg-destructive/15 text-destructive"
-                              : undefined
-                          }
-                        >
-                          {n.priority}
-                        </Badge>
+            {items.map((n) => {
+              const open = expanded.has(n.id);
+              return (
+                <Card key={n.id} className={n.read ? "opacity-70" : undefined}>
+                  <CardContent className="flex flex-wrap items-start justify-between gap-3 p-4">
+                    <div className="min-w-0 flex-1">
+                      <button
+                        type="button"
+                        aria-expanded={open}
+                        onClick={() => setExpanded((prev) => withIds(prev, [n.id], !open))}
+                        className="flex w-full items-center gap-2 text-left"
+                      >
+                        <ChevronRight
+                          className={cn(
+                            "size-4 shrink-0 text-muted-foreground transition-transform",
+                            open && "rotate-90",
+                          )}
+                        />
+                        <span className="truncate font-medium">{n.subject}</span>
+                        {!n.read && <Badge variant="secondary">new</Badge>}
+                        {n.priority && n.priority !== "info" && (
+                          <Badge
+                            variant="secondary"
+                            className={
+                              n.priority === "critical" || n.priority === "urgent"
+                                ? "bg-destructive/15 text-destructive"
+                                : undefined
+                            }
+                          >
+                            {n.priority}
+                          </Badge>
+                        )}
+                      </button>
+                      {open && n.body && (
+                        <Markdown className="mt-1 pl-6 text-sm text-muted-foreground">
+                          {n.body}
+                        </Markdown>
                       )}
+                      <p className="mt-1 pl-6 text-xs text-muted-foreground">
+                        {n.from && (
+                          <span title={senderAgentId(n.from) ?? undefined}>
+                            from {sender(n.from)} ·{" "}
+                          </span>
+                        )}
+                        {relativeTime(n.timestamp)}
+                      </p>
                     </div>
-                    {n.body && <Markdown className="mt-1 text-sm text-muted-foreground">{n.body}</Markdown>}
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {n.from && (
-                        <span title={senderAgentId(n.from) ?? undefined}>from {sender(n.from)} · </span>
-                      )}
-                      {relativeTime(n.timestamp)}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="outline" onClick={() => setRespondTo(n)}>
-                      Respond
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={dismissing.has(n.id)}
-                      onClick={() => void onDismiss(n.id)}
-                    >
-                      Dismiss
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setRespondTo(n)}>
+                        Respond
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={dismissing.has(n.id)}
+                        onClick={() => void onDismiss(n.id)}
+                      >
+                        Dismiss
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         )}
       </QueryState>
       <RespondDialog target={respondTo} onOpenChange={(o) => !o && setRespondTo(null)} />
     </div>
   );
+}
+
+// ── Folder access (workspace grants) ─────────────────────────────────────────
+
+/** Mode presets, widest last so the list reads as an escalation. */
+const WORKSPACE_MODES = [
+  { value: "r", label: "Read only" },
+  { value: "rw", label: "Read + write" },
+  { value: "rwx", label: "Read + write + run" },
+] as const;
+
+/**
+ * Directly-under-`$HOME` directories broad enough to deserve a confirmation,
+ * mirroring `BROAD_GRANT_BASENAMES` in the `agentos workspace` CLI. The kernel
+ * does not enforce this — it is a speed bump, not a policy.
+ */
+const BROAD_GRANT_BASENAMES = [
+  "Desktop",
+  "Documents",
+  "Downloads",
+  "Pictures",
+  "Music",
+  "Videos",
+  "Public",
+];
+
+/**
+ * Segment prefixes under which the next segment is a user's home directory.
+ * The panel runs in a browser and cannot read `$HOME`, so the layouts that
+ * actually ship get enumerated: plain Linux, rpm-ostree/Silverblue, NFS sites,
+ * macOS. Without this, `/var/home/you/Desktop` reads as an ordinary four-deep
+ * project path and skips the confirmation the CLI would show.
+ */
+const HOME_PREFIXES = [["home"], ["var", "home"], ["export", "home"], ["Users"]];
+
+/**
+ * How many leading segments make up the user's home directory, or `-1` when
+ * `parts` is not under one. `/home/you/project` → 2, `/var/home/you` → 3.
+ */
+function homeDirDepth(parts: readonly string[]): number {
+  for (const prefix of HOME_PREFIXES) {
+    if (parts.length > prefix.length && prefix.every((seg, i) => parts[i] === seg)) {
+      return prefix.length + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Split a path the way the kernel does before it stores the grant.
+ *
+ * `lexically_normalize` in `workspace_grant_store.rs` drops `.` segments and
+ * pops on `..` — and it runs BEFORE the `..` rejection in path validation, so
+ * `/home/you/Desktop/..` is accepted and stored as `/home/you`. Classifying the
+ * string the operator typed instead of the path that gets stored is how a
+ * whole-home grant slips through with no warning at all.
+ */
+function normalizedSegments(path: string): string[] {
+  const parts: string[] = [];
+  for (const seg of path.trim().split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  return parts;
+}
+
+/**
+ * Blast-radius warning for a folder grant, or `null` when it is narrow enough
+ * to add without a hard stop. Two separate risks stack: a home-level directory
+ * tree, and a grant that covers every agent rather than one.
+ *
+ * Deliberately quiet for ordinary shared directories (`/tmp/work`, `/srv/data`)
+ * — the kernel accepts those and the CLI grants them without prompting. A
+ * confirmation the operator learns to click through protects nothing.
+ */
+export function folderGrantWarning(
+  path: string,
+  allAgents: boolean,
+  mode: string,
+): string | null {
+  const parts = normalizedSegments(path);
+  const clean = `/${parts.join("/")}`;
+  const home = homeDirDepth(parts);
+  const basename = parts[parts.length - 1];
+  // `/home/you/Desktop` — a broad basename sitting directly in a home directory.
+  const broad = home > 0 && parts.length === home + 1 && BROAD_GRANT_BASENAMES.includes(basename);
+  // A home directory itself, or a filesystem root.
+  const veryBroad = parts.length <= 1 || parts.length === home;
+  if (!broad && !veryBroad && !allAgents) return null;
+  const who = allAgents ? "Every agent, including ones connected later," : "This agent";
+  const what = veryBroad
+    ? `everything under ${clean}`
+    : broad
+      ? `your whole ${basename} folder and every subfolder`
+      : `${clean} and every subfolder`;
+  // Say the mode that was actually picked: a read-only grant described as
+  // "read and write" makes the confirmation useless for checking the mode.
+  const verbs = modeLabel(mode).split(" + ");
+  const can =
+    verbs.length > 1 ? `${verbs.slice(0, -1).join(", ")} and ${verbs[verbs.length - 1]}` : verbs[0];
+  return `${who} will be able to ${can} ${what}.`;
+}
+
+/** The path the kernel will actually store, so the UI never names a different one. */
+export function normalizeGrantPath(path: string): string {
+  return `/${normalizedSegments(path).join("/")}`;
+}
+
+/**
+ * Request body for a folder grant. `ALL_AGENTS` is a UI-only sentinel — the API
+ * models "every agent" as an ABSENT `agent_name`, so `"*"` must never reach the
+ * wire, where it would be resolved as an agent literally named `*` and 404.
+ */
+export function buildWorkspaceGrantBody(
+  path: string,
+  mode: string,
+  scope: string,
+): GrantWorkspaceBody {
+  return {
+    path: normalizeGrantPath(path),
+    mode,
+    agent_name: scope === ALL_AGENTS ? undefined : scope,
+  };
+}
+
+function GrantFolderDialog() {
+  const [open, setOpen] = useState(false);
+  const [path, setPath] = useState("");
+  const [mode, setMode] = useState<string>("rw");
+  const [agentId, setAgentId] = useState("");
+  const agents = useAgents();
+  const grant = useGrantWorkspace();
+
+  // Same rule as the standing-grant dialog: no default scope, because a
+  // pre-selected agent turns a security decision into two clicks.
+  const scope = agentId;
+  const allAgents = scope === ALL_AGENTS;
+  const agentPlaceholder = agents.isLoading
+    ? "Loading agents…"
+    : agents.isError
+      ? "Couldn't load agents — reload to retry"
+      : agents.data?.length
+        ? "Select an agent…"
+        : "No agents connected";
+  const absolute = path.trim().startsWith("/");
+  const warning = absolute ? folderGrantWarning(path, allAgents, mode) : null;
+
+  function reset() {
+    setPath("");
+    setMode("rw");
+    setAgentId("");
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!absolute || !scope) return;
+    if (
+      warning &&
+      !(await confirm({
+        title: `Grant access to ${normalizeGrantPath(path)}?`,
+        description: warning,
+        destructive: true,
+        confirmLabel: "Grant access",
+      }))
+    )
+      return;
+    try {
+      await grant.mutateAsync(buildWorkspaceGrantBody(path, mode, scope));
+      toast.success(`Granted ${normalizeGrantPath(path)}`);
+      reset();
+      setOpen(false);
+    } catch (err) {
+      toastError(err);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) reset();
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button size="sm">Grant folder</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <form onSubmit={submit}>
+          <DialogHeader>
+            <DialogTitle>Grant folder access</DialogTitle>
+            <DialogDescription>
+              Let an agent work inside a directory on this machine. Subfolders are included.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-3">
+            <div className="space-y-1">
+              <label htmlFor="ws-path" className="text-sm font-medium">
+                Folder
+              </label>
+              <Input
+                id="ws-path"
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="/home/you/project"
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground">
+                {/* The panel is a browser: there is no shell to expand `~` against. */}
+                Absolute path — <code>~</code> is not expanded. System roots are rejected.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="ws-agent" className="text-sm font-medium">
+                Applies to
+              </label>
+              <Select
+                id="ws-agent"
+                value={scope}
+                onChange={(e) => setAgentId(e.target.value)}
+                disabled={agents.isLoading || agents.isError}
+              >
+                <option value="">{agentPlaceholder}</option>
+                {(agents.data ?? []).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} ({a.model})
+                  </option>
+                ))}
+                {!agents.isError && (
+                  <option value={ALL_AGENTS}>⚠ All agents — every agent, present and future</option>
+                )}
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Access</label>
+              <SegmentedControl
+                aria-label="Access"
+                options={WORKSPACE_MODES.map((m) => ({ value: m.value, label: m.label }))}
+                value={mode}
+                onChange={setMode}
+              />
+            </div>
+            {warning && (
+              <Callout tone="warning" role="status">
+                {warning}
+              </Callout>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="submit" disabled={grant.isPending || !absolute || !scope}>
+              {grant.isPending ? "Granting…" : "Grant access"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function FolderAccessPage() {
+  const query = useWorkspaceGrants();
+  const revoke = useRevokeWorkspaceGrant();
+  const canWrite = useAuthStore((s) => s.can("workspace:w"));
+  const agentName = useAgentNames();
+  // Per-row in-flight set — a shared `isPending` disables Revoke on every row.
+  const [revoking, setRevoking] = useState<ReadonlySet<number>>(new Set());
+
+  async function onRevoke(g: WorkspaceGrant) {
+    if (
+      !(await confirm({
+        title: `Revoke access to ${g.path}?`,
+        description: `${g.agent_id ? `Agent ${agentLabel(agentName(g.agent_id), g.agent_id)}` : "Every agent"} will lose access to this folder and everything under it.`,
+        destructive: true,
+        confirmLabel: "Revoke",
+      }))
+    )
+      return;
+    setRevoking((prev) => withIds(prev, [g.id], true));
+    try {
+      // Revocation matches on (path, agent scope). The kernel accepts a raw
+      // AgentID where it accepts a display name, so the id round-trips.
+      await revoke.mutateAsync({ path: g.path, agent_name: g.agent_id ?? undefined });
+      toast.success(`Revoked ${g.path}`);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setRevoking((prev) => withIds(prev, [g.id], false));
+    }
+  }
+
+  return (
+    <div>
+      <PageHeader
+        title="Folder access"
+        description="Directories on this machine that agents may work inside. Without a grant, file tools are limited to the AgentOS data directory."
+        actions={canWrite ? <GrantFolderDialog /> : null}
+      />
+      <QueryState
+        query={query}
+        isEmpty={(d) => d.length === 0}
+        empty={
+          <EmptyState
+            icon={FolderLock}
+            title="No folders shared"
+            description="Agents can only reach the AgentOS data directory."
+            action={canWrite ? <GrantFolderDialog /> : undefined}
+          />
+        }
+      >
+        {(items) => (
+          <div className="space-y-2">
+            {items.map((g) => (
+              <Card key={g.id}>
+                <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                  <div className="min-w-0">
+                    <p className="font-medium">
+                      <code className="break-all">{g.path}</code>{" "}
+                      <Badge variant="outline">{modeLabel(g.mode)}</Badge>{" "}
+                      {/* The confirmation only guards creation. A broad grant made
+                          from the CLI, imported from config, or added before this
+                          page existed would otherwise look like any other row. */}
+                      {folderGrantWarning(g.path, !g.agent_id, g.mode) && (
+                        <Badge variant="secondary" className="border-destructive/50 text-destructive">
+                          broad
+                        </Badge>
+                      )}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {g.agent_id ? (
+                        <span title={g.agent_id}>
+                          agent {agentLabel(agentName(g.agent_id), g.agent_id)} ·{" "}
+                        </span>
+                      ) : (
+                        "all agents · "
+                      )}
+                      granted {relativeTime(g.granted_at)} by {g.granted_by}
+                    </p>
+                  </div>
+                  {canWrite && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={revoking.has(g.id)}
+                      onClick={() => onRevoke(g)}
+                    >
+                      Revoke
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </QueryState>
+    </div>
+  );
+}
+
+/** `"rwx"` → a phrase an operator can read without decoding bits. */
+export function modeLabel(mode: string): string {
+  const parts = [
+    mode.includes("r") && "read",
+    mode.includes("w") && "write",
+    mode.includes("x") && "run",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" + ") : "no access";
 }

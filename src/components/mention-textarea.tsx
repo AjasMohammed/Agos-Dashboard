@@ -183,7 +183,7 @@ export function MentionTextarea({
           role="listbox"
           aria-label="Uploaded files"
           className={cn(
-            "absolute inset-x-0 z-50 max-h-56 overflow-y-auto rounded-md border border-border bg-card text-card-foreground shadow-md",
+            "absolute inset-x-0 z-50 max-h-56 overflow-y-auto rounded-md border border-border bg-popover text-popover-foreground shadow-popover",
             menuPlacement === "top" ? "bottom-full mb-1" : "top-full mt-1",
           )}
         >

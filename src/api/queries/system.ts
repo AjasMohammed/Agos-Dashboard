@@ -87,6 +87,8 @@ export function useDeleteFile() {
   });
 }
 
+const UPLOAD_TIMEOUT_MS = 10 * 60_000;
+
 export function useUploadFile() {
   const qc = useQueryClient();
   return useMutation({
@@ -95,7 +97,12 @@ export function useUploadFile() {
     mutationFn: async (file: File) => {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await authedFetch(`${API_BASE}/api/v1/files`, { method: "POST", body: fd });
+      // Uploads are sized by the network, not by the JSON-call deadline.
+      const res = await authedFetch(
+        `${API_BASE}/api/v1/files`,
+        { method: "POST", body: fd },
+        UPLOAD_TIMEOUT_MS,
+      );
       if (!res.ok) throw new Error(`Upload failed (${res.status})`);
       return res.json();
     },
@@ -146,8 +153,9 @@ export function useSaveScratchPage() {
 
 // ── Secrets ─────────────────────────────────────────────────────────────────
 export const secretKeys = { all: ["secrets"] as const };
-export function useSecrets() {
+export function useSecrets(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: secretKeys.all,
     queryFn: async () => {
       const data = unwrap<unknown>(await client.GET("/api/v1/secrets"));
@@ -158,7 +166,10 @@ export function useSecrets() {
 export function useSetSecret() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { name: string; value: string; scope?: string }) =>
+    // `scope` is REQUIRED by the API on purpose (no default: `global` exposes
+    // the secret to every agent and tool), so it is required here too — an
+    // optional field just moved the failure to a 400 at runtime.
+    mutationFn: async (body: { name: string; value: string; scope: string }) =>
       unwrap(await client.POST("/api/v1/secrets", { body })),
     onSuccess: () => qc.invalidateQueries({ queryKey: secretKeys.all }),
   });

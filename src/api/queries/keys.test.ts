@@ -129,6 +129,13 @@ const INTENDED: Record<string, string[]> = {
   "skillKeys.all": ["skillKeys.detail"],
   // Marking one notification read changes the unread badge.
   "notificationKeys.all": ["notificationKeys.unread"],
+  // Resolving an escalation changes both the full history and the pending-only view.
+  "escalationKeys.all": ["escalationKeys.pending"],
+  // A verify/fix refreshes every filtered audit list at once.
+  "auditKeys.logs": ["auditKeys.list"],
+  // Attaching, installing or detaching a server changes the `installed` flag on
+  // every catalog search, so they all refresh together.
+  "mcpKeys.catalogAll": ["mcpKeys.catalog"],
   // Run/cancel/resume invalidate the whole task family: the list row, the detail
   // header, and the trace/checkpoints that just changed underneath them.
   "taskKeys.all": ["taskKeys.checkpoints", "taskKeys.detail", "taskKeys.list", "taskKeys.trace"],

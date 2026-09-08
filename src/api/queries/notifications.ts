@@ -65,3 +65,24 @@ export function useClearReadNotifications() {
     onSuccess: () => qc.invalidateQueries({ queryKey: notificationKeys.all }),
   });
 }
+
+export function useClearAllNotifications() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      unwrap(await client.DELETE("/api/v1/notifications"));
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: notificationKeys.all }),
+  });
+}
+
+/** Nothing else marks notifications read, so "Clear read" is a no-op without this. */
+export function useMarkAllNotificationsRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      unwrap(await client.POST("/api/v1/notifications/read-all"));
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: notificationKeys.all }),
+  });
+}

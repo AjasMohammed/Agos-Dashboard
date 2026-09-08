@@ -28,8 +28,9 @@ import { RunTaskDialog } from "./run-task-dialog";
 import { TaskTraceView, truncateText } from "./task-trace";
 import type { TaskTrace } from "@/api/models";
 
-const RUNNING = ["running", "pending", "queued", "in_progress"];
-const RESUMABLE = ["suspended", "paused", "checkpointed"];
+// API vocabulary (crates/agentos-api/src/util.rs): queued running waiting suspended complete failed cancelled
+const RUNNING = ["running", "queued", "waiting"];
+const RESUMABLE = ["suspended"];
 /** Raw-JSON cap. A task that read a 20 MB log used to materialise all of it. */
 const RAW_TRACE_CHARS = 200_000;
 
@@ -55,7 +56,7 @@ function RawTraceJson({ trace }: { trace: TaskTrace }) {
         Raw trace JSON
       </summary>
       {open && (
-        <pre className="mt-2 overflow-auto rounded-lg border border-border bg-muted p-4 text-xs">
+        <pre className="mt-2 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
           {text}
         </pre>
       )}

@@ -10,8 +10,9 @@ import { test, expect, type Page } from "@playwright/test";
  * mock returns placeholder `scopes: ["string"]`, which — correctly — grants
  * nothing, so only the un-scoped Dashboard link would show.)
  *
- * Chat is the home route; the operator sections live behind the sidebar's
- * "More" fold, so a test that wants one opens it via `openMore()` first.
+ * Chat is the home route. The Workspace section of the sidebar is always
+ * open; the Automate/Govern/Integrate/System sections fold, so a test that
+ * wants one of their pages opens the group via `openGroup()` first.
  */
 
 const FULL_ACCESS = {
@@ -89,6 +90,14 @@ async function stubAuth(page: Page) {
       body: JSON.stringify({ data: { ticket: "e2e-ticket", expires_at: null } }),
     }),
   );
+  // The sidebar badge polls pending escalations on every authenticated route.
+  await page.route("**/api/v1/escalations*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    }),
+  );
   await page.route("**/api/v1/notifications/unread", (route) =>
     route.fulfill({
       status: 200,
@@ -114,10 +123,13 @@ async function login(page: Page) {
   await expect(page.getByRole("heading", { name: "Chat" })).toBeVisible();
 }
 
-/** Operator sections sit under the collapsible "More" fold. */
-async function openMore(page: Page) {
-  const more = page.getByRole("button", { name: "More" });
-  if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
+/** The sidebar. Nav links share names with in-page links ("Open audit log"), so scope to it. */
+const nav = (page: Page) => page.getByRole("navigation", { name: "Main" });
+
+/** Fold open one of the collapsible sidebar groups (Automate, Govern, Integrate, System). */
+async function openGroup(page: Page, label: string) {
+  const group = nav(page).getByRole("button", { name: label, exact: true });
+  if ((await group.getAttribute("aria-expanded")) !== "true") await group.click();
 }
 
 test("unauthenticated visit redirects to /login", async ({ page }) => {
@@ -128,23 +140,24 @@ test("unauthenticated visit redirects to /login", async ({ page }) => {
   await expect(page.getByRole("button", { name: /sign in/i })).toBeVisible();
 });
 
-test("login lands on chat with the primary nav, operator pages under More", async ({ page }) => {
+test("login lands on chat with the workspace nav, operator pages in folded groups", async ({ page }) => {
   await login(page);
   await expect(page).toHaveURL(/\/$/);
-  // Primary strip is always visible; the kernel-ish sections are folded away.
-  await expect(page.getByRole("link", { name: "Chat" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Agents" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Activity" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Tasks" })).toHaveCount(0);
+  // Workspace section is always visible; the kernel-ish sections are folded away.
+  await expect(nav(page).getByRole("link", { name: "Chat" })).toBeVisible();
+  await expect(nav(page).getByRole("link", { name: "Agents" })).toBeVisible();
+  await expect(nav(page).getByRole("link", { name: "Activity" })).toBeVisible();
+  await expect(nav(page).getByRole("link", { name: "Tasks" })).toBeVisible();
+  await expect(nav(page).getByRole("link", { name: "Audit log" })).toHaveCount(0);
 
-  await openMore(page);
-  await expect(page.getByText("System", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Tasks" })).toBeVisible();
+  await expect(nav(page).getByText("System", { exact: true })).toBeVisible();
+  await openGroup(page, "Govern");
+  await expect(nav(page).getByRole("link", { name: "Audit log" })).toBeVisible();
 });
 
 test("dashboard renders live stat cards (not a placeholder)", async ({ page }) => {
   await login(page);
-  await page.getByRole("link", { name: "Dashboard" }).click();
+  await nav(page).getByRole("link", { name: "Dashboard" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
   // Scope to the main content — nav links share names with the stat cards.
   const main = page.getByRole("main");
@@ -157,16 +170,41 @@ test("dashboard renders live stat cards (not a placeholder)", async ({ page }) =
 
 test("navigating to feature pages renders real pages", async ({ page }) => {
   await login(page);
-  await openMore(page);
-  await page.getByRole("link", { name: "Tasks" }).click();
+  await nav(page).getByRole("link", { name: "Tasks" }).click();
   await expect(page).toHaveURL(/\/tasks$/);
   await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /new task/i })).toBeVisible();
+  // The header action; an empty list also offers one from its empty state.
+  await expect(page.getByRole("button", { name: /new task/i }).first()).toBeVisible();
 
-  await page.getByRole("link", { name: "Agents" }).click();
+  await nav(page).getByRole("link", { name: "Agents" }).click();
   await expect(page).toHaveURL(/\/agents$/);
   await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
   await expect(page.getByRole("button", { name: /add assistant/i })).toBeVisible();
+});
+
+test("the chat rail stays reachable on a phone-sized viewport", async ({ page }) => {
+  // Regression: the rail was suppressed below `md` so the conversation could use
+  // the full width, which made its only toggle a dead button — `current` falls
+  // back to the first session, so the forced-open branch never fired and there
+  // was no route back to "New chat". It now floats over the pane instead.
+  await page.setViewportSize({ width: 390, height: 800 });
+  await login(page);
+  // Measured, not `toBeHidden`: the rail collapses by animating its width to 0,
+  // and its fixed-width children keep a bounding box inside that, so the buttons
+  // read as "visible" to Playwright even when the rail is shut.
+  const rail = page.locator("aside").last();
+  const railWidth = async () => (await rail.boundingBox())?.width ?? 0;
+
+  // Polled: the rail animates shut over 250ms, so a single sample right after
+  // login catches it mid-transition.
+  await expect.poll(railWidth).toBeLessThan(8);
+  await page.getByRole("button", { name: /show chats/i }).click();
+  await expect.poll(railWidth).toBeGreaterThan(200);
+  // Floating, not squeezing: the conversation keeps the whole viewport under it.
+  await expect(rail).toHaveCSS("position", "fixed");
+
+  await page.keyboard.press("Escape");
+  await expect.poll(railWidth).toBeLessThan(8);
 });
 
 test("theme toggle flips the root color scheme", async ({ page }) => {
@@ -184,7 +222,9 @@ test("topbar shows a realtime connection indicator", async ({ page }) => {
 });
 
 test("scope gating hides nav items the key cannot access", async ({ page }) => {
-  // A read-only audit key should see Audit but not Agents/Secrets.
+  // A read-only audit key should see Audit but not Agents/Secrets. Later
+  // routes win, so the full-access stubs go first and login/me are overridden.
+  await stubAuth(page);
   await page.route("**/api/v1/auth/login", (route) =>
     route.fulfill({
       status: 200,
@@ -204,10 +244,10 @@ test("scope gating hides nav items the key cannot access", async ({ page }) => {
   await page.getByRole("button", { name: /sign in/i }).click();
   // No chat:r → home falls back to the unscoped dashboard.
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-  await openMore(page);
-  await expect(page.getByRole("link", { name: "Audit" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Agents" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "API keys & credentials" })).toHaveCount(0);
+  await openGroup(page, "Govern");
+  await expect(nav(page).getByRole("link", { name: "Audit log" })).toBeVisible();
+  await expect(nav(page).getByRole("link", { name: "Agents" })).toHaveCount(0);
+  await expect(nav(page).getByRole("link", { name: "Secrets" })).toHaveCount(0);
 });
 
 const FILES = {
@@ -274,7 +314,8 @@ test("typing @ in the run-task prompt suggests uploaded files", async ({ page })
     }),
   );
   await page.goto("/tasks");
-  await page.getByRole("button", { name: /new task/i }).click();
+  // Two "New task" buttons on an empty list (header + empty state); either opens the dialog.
+  await page.getByRole("button", { name: /new task/i }).first().click();
 
   const prompt = page.getByPlaceholder(/Summarize the latest audit events/);
   await prompt.fill("Summarize @rep");

@@ -34,7 +34,7 @@ export const StepNode = memo(function StepNode({ data, selected }: NodeProps<Bui
     <div
       className={cn(
         "min-w-44 max-w-56 rounded-lg border bg-card shadow-card transition-shadow",
-        selected ? "border-primary shadow-glow" : "border-border",
+        selected ? "border-primary ring-2 ring-primary/25" : "border-border",
       )}
     >
       <Handle
@@ -119,7 +119,7 @@ export function Palette({
       <div className="flex-1 space-y-3 overflow-y-auto px-2 pb-3">
         {filtered.map((g) => (
           <div key={g.label}>
-            <p className="px-1 pb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">
+            <p className="px-1 pb-1 text-xs font-medium text-muted-foreground">
               {g.label}
             </p>
             <ul className="space-y-1">

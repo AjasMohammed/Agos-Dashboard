@@ -12,6 +12,54 @@ export type UpdateAgentSettingsRequest = S["UpdateAgentSettingsRequest"];
 // Tasks
 export type TaskSummary = S["ApiTaskSummary"];
 export type TaskDetail = S["ApiTaskDetail"];
+/**
+ * The API's task-state vocabulary, generated from the Rust `ApiTaskStatus`
+ * enum. Anything that filters or labels a task status must be typed against
+ * this — the panel once sent `completed` while the API said `complete`, and
+ * the filter silently returned zero rows for months.
+ */
+export type TaskStatus = S["ApiTaskStatus"];
+export const TASK_STATUSES = [
+  "queued",
+  "running",
+  "waiting",
+  "suspended",
+  "complete",
+  "failed",
+  "cancelled",
+] as const satisfies readonly TaskStatus[];
+/** Compile-time contract check: fails if the API grows a status we don't list. */
+type MissingTaskStatus = Exclude<TaskStatus, (typeof TASK_STATUSES)[number]>;
+const _taskStatusesAreExhaustive: MissingTaskStatus extends never
+  ? true
+  : ["unhandled task statuses", MissingTaskStatus] = true;
+void _taskStatusesAreExhaustive;
+
+/** Schedule-state vocabulary, generated from the Rust `ApiScheduleState`. */
+export type ScheduleState = S["ApiScheduleState"];
+export const SCHEDULE_STATES = [
+  "active",
+  "paused",
+  "disabled",
+  "pending",
+  "fired",
+  "cancelled",
+] as const satisfies readonly ScheduleState[];
+type MissingScheduleState = Exclude<ScheduleState, (typeof SCHEDULE_STATES)[number]>;
+const _scheduleStatesAreExhaustive: MissingScheduleState extends never
+  ? true
+  : ["unhandled schedule states", MissingScheduleState] = true;
+void _scheduleStatesAreExhaustive;
+
+/** Narrow an arbitrary string (URL param, old bookmark) to a known status. */
+export function asTaskStatus(v: string | undefined): TaskStatus | undefined {
+  if (!v) return undefined;
+  // `completed` was the panel's own old spelling; keep old links working.
+  const normalized = v === "completed" ? "complete" : v;
+  return (TASK_STATUSES as readonly string[]).includes(normalized)
+    ? (normalized as TaskStatus)
+    : undefined;
+}
 export type RunTaskRequest = S["RunTaskRequest"];
 export type CheckpointSummary = S["ApiCheckpointSummary"];
 
@@ -77,6 +125,7 @@ export type ScheduleSummary = S["ApiScheduleSummary"];
 export type ScheduleRun = S["ApiScheduleRun"];
 export type MemoryItem = S["ApiMemoryItem"];
 export type SkillSummary = S["ApiSkillSummary"];
+export type Provider = S["ApiProvider"];
 export type SkillDetail = S["ApiSkillDetail"];
 export type InboxMessage = S["ApiInboxMessage"];
 export type PipelineSummary = S["ApiPipelineSummary"];
@@ -88,6 +137,8 @@ export type ProposalStats = S["ApiProposalStats"];
 export type Role = S["ApiRole"];
 export type ApprovalPolicy = S["ApiApprovalPolicy"];
 export type AddApprovalPolicyBody = S["AddApprovalPolicyRequest"];
+export type WorkspaceGrant = S["ApiWorkspaceGrant"];
+export type GrantWorkspaceBody = S["GrantWorkspaceRequest"];
 
 // Extensibility
 export type PluginSummary = S["ApiPluginSummary"];
@@ -123,6 +174,15 @@ export type ApiKeyMeta = S["ApiKeyMeta"];
 export type IssuedKey = S["IssuedKeyResponse"];
 export type CreateKeyRequest = S["CreateKeyRequest"];
 export type PluginDetail = S["ApiPluginDetail"];
+export type AttachMcpRequest = S["AttachMcpRequest"];
+export type McpAttached = S["McpAttachedResponse"];
+export type McpCatalogEntry = S["ApiMcpCatalogEntry"];
+export type ConnectChannelRequest = S["ConnectChannelRequest"];
+export type UpdateChannelRequest = S["UpdateChannelRequest"];
+export type Pairings = S["ApiPairings"];
+export type PairingEntry = S["ApiPairingEntry"];
+export type PendingPairing = S["ApiPendingPairing"];
+export type StoreCredentialRequest = S["StoreCredentialRequest"];
 export type ConnectorDetail = S["ApiConnectorDetail"];
 export type HalInfo = S["HalInfo"];
 export type SystemStatus = S["SystemStatus"];

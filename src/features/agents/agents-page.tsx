@@ -80,7 +80,7 @@ export function AgentsPage() {
     <div>
       <PageHeader
         title="Agents"
-        description="Your assistants and the models behind them."
+        description="Every connected agent, the model behind it, and when it was last active."
         actions={<ConnectAgentDialog />}
       />
       <QueryState

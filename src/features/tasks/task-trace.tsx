@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { relativeTime, tokens, usd } from "@/lib/format";
+import { Stat, StatGrid } from "@/components/ui/stat";
 
 /**
  * A single tool call can carry a whole log file or file read; the DOM does not
@@ -155,33 +156,23 @@ function Iteration({ it }: { it: IterationTrace }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="text-sm font-medium tabular-nums">{value}</div>
-    </div>
-  );
-}
-
 /** Structured render of a task's execution trace: iterations + tool calls. */
 export function TaskTraceView({ trace }: { trace: TaskTrace }) {
   const toolCalls = trace.iterations.reduce((n, it) => n + it.tool_calls.length, 0);
   return (
     <div className="space-y-4">
-      <Card>
-        <CardContent className="grid grid-cols-2 gap-4 py-4 sm:grid-cols-3 lg:grid-cols-6">
-          <Stat label="Iterations" value={String(trace.iterations.length)} />
-          <Stat label="Tool calls" value={String(toolCalls)} />
-          <Stat label="Input tokens" value={tokens(trace.total_input_tokens)} />
-          <Stat label="Output tokens" value={tokens(trace.total_output_tokens)} />
-          <Stat label="Cost" value={usd(trace.total_cost_usd)} />
-          <Stat
-            label="Finished"
-            value={trace.finished_at ? relativeTime(trace.finished_at) : "—"}
-          />
-        </CardContent>
-      </Card>
+      <StatGrid min={130}>
+        <Stat size="sm" label="Iterations" value={trace.iterations.length} />
+        <Stat size="sm" label="Tool calls" value={toolCalls} />
+        <Stat size="sm" label="Input tokens" value={tokens(trace.total_input_tokens)} />
+        <Stat size="sm" label="Output tokens" value={tokens(trace.total_output_tokens)} />
+        <Stat size="sm" label="Cost" value={usd(trace.total_cost_usd)} />
+        <Stat
+          size="sm"
+          label="Finished"
+          value={trace.finished_at ? relativeTime(trace.finished_at) : "—"}
+        />
+      </StatGrid>
 
       {trace.iterations.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">

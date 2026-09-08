@@ -1,17 +1,20 @@
 import * as React from "react";
+import { controlClass } from "./input";
 import { cn } from "@/lib/utils";
 
-/** Lightweight styled native select (sufficient for short, static option lists). */
+/**
+ * Styled native select — sufficient for the panel's short, static option lists,
+ * and it keeps keyboard/mobile behaviour the OS already gets right. The chevron
+ * is a CSS background (`.select-chevron`) so the element stays a plain
+ * `<select>` that accepts width classes directly.
+ */
 export const Select = React.forwardRef<
   HTMLSelectElement,
   React.SelectHTMLAttributes<HTMLSelectElement>
 >(({ className, children, ...props }, ref) => (
   <select
     ref={ref}
-    className={cn(
-      "h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-      className,
-    )}
+    className={cn(controlClass, "select-chevron h-8 cursor-pointer appearance-none pl-2.5 pr-8", className)}
     {...props}
   >
     {children}

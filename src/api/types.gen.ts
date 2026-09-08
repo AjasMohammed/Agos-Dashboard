@@ -135,9 +135,14 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * `DELETE /api/v1/agents/{name}` — Disconnect an agent by name.
-         * @description We look up the agent ID from the name via `get_agent_detail`, then call
-         *     `disconnect_agent`.
+         * `DELETE /api/v1/agents/{name}` — Disconnect an agent by name, or remove it
+         *     entirely with `?purge=true`.
+         * @description Disconnect parks the agent: the profile stays on disk marked offline so a
+         *     reconnect reuses the same UUID. Disconnecting an already-offline agent is a
+         *     no-op success (the kernel command itself rejects it; the handler short-circuits).
+         *     Purge deletes the profile, identity, memory tiers, scratchpad, inboxes,
+         *     checkpoints and schedules — it works whether the agent is online or not, and
+         *     cannot be undone. Vault secrets and the audit log are kept either way.
          */
         delete: operations["agents_disconnect"];
         options?: never;
@@ -411,7 +416,42 @@ export interface paths {
         /** `GET /api/v1/channels` — List connected channels. */
         get: operations["channels_list"];
         put?: never;
+        /** `POST /api/v1/channels` — Connect a channel (mirrors `agentos channel connect`). */
+        post: operations["channels_connect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channels/pairings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/channels/pairings` — DM pairing allowlist (approved + pending). */
+        get: operations["channels_pairings"];
+        put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channels/pairings/{code}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/channels/pairings/{code}/approve` — Approve a pairing code. */
+        post: operations["channels_approve_pairing"];
         delete?: never;
         options?: never;
         head?: never;
@@ -427,7 +467,25 @@ export interface paths {
         };
         /** `GET /api/v1/channels/{id}` — Channel detail. */
         get: operations["channels_detail"];
-        put?: never;
+        /** `PUT /api/v1/channels/{id}` — Edit a connected channel and rebuild its adapter. */
+        put: operations["channels_update"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channels/{id}/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** `PUT /api/v1/channels/{id}/agent` — Set/clear the default chat agent. */
+        put: operations["channels_set_agent"];
         post?: never;
         delete?: never;
         options?: never;
@@ -446,6 +504,65 @@ export interface paths {
         put?: never;
         /** `POST /api/v1/channels/{id}/disconnect` — Deregister a channel. */
         post: operations["channels_disconnect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channels/{id}/pairings/{sender_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** `DELETE /api/v1/channels/{id}/pairings/{sender_id}` — Revoke an approved sender. */
+        delete: operations["channels_revoke_pairing"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channels/{id}/pairings/{sender_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/channels/{id}/pairings/{sender_id}/approve` — Approve a
+         *     pending request by sender, without the code.
+         * @description The code is withheld from `GET /channels/pairings` on purpose, which leaves
+         *     the self-pair case with no panel route (the operator is the sender, and the
+         *     code only reaches the kernel log). This approves the row the list already
+         *     returns. `channels:w` gated — it takes no secret, so it is deliberately not
+         *     reachable from the inbound `/pair` path.
+         */
+        post: operations["channels_approve_pending_pairing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channels/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/channels/{id}/test` — Deliver a test notification. */
+        post: operations["channels_test"];
         delete?: never;
         options?: never;
         head?: never;
@@ -642,7 +759,8 @@ export interface paths {
         /** `GET /api/v1/connectors` — List registered connectors and connection status. */
         get: operations["connectors_list"];
         put?: never;
-        post?: never;
+        /** `POST /api/v1/connectors` — Register a connector from a manifest TOML. */
+        post: operations["connectors_add"];
         delete?: never;
         options?: never;
         head?: never;
@@ -658,8 +776,27 @@ export interface paths {
         };
         /** `GET /api/v1/connectors/{id}` — Connector detail. */
         get: operations["connectors_detail"];
-        put?: never;
+        /** `PUT /api/v1/connectors/{id}` — Replace a connector manifest in place. */
+        put: operations["connectors_update"];
         post?: never;
+        /** `DELETE /api/v1/connectors/{id}` — Remove manifest + credential. */
+        delete: operations["connectors_remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{id}/credential": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/connectors/{id}/credential` — Store an OAuth token by hand. */
+        post: operations["connectors_store_credential"];
         delete?: never;
         options?: never;
         head?: never;
@@ -677,6 +814,45 @@ export interface paths {
         put?: never;
         /** `POST /api/v1/connectors/{id}/disconnect` — Revoke OAuth credential + deregister. */
         post: operations["connectors_disconnect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{id}/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/connectors/{id}/oauth/callback` — Provider redirect target (public).
+         * @description No bearer: the browser arrives here from the provider. Safety is the
+         *     vault-validated `state`. On completion the browser is sent to the panel
+         *     origin from config — never to a caller-supplied URL.
+         */
+        get: operations["connectors_oauth_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{id}/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/connectors/{id}/oauth/start` — Begin OAuth; returns the URL to open. */
+        post: operations["connectors_oauth_start"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1151,6 +1327,75 @@ export interface paths {
         /** `GET /api/v1/mcp` — List MCP servers (live + persisted attachments). */
         get: operations["mcp_list"];
         put?: never;
+        /** `POST /api/v1/mcp` — Attach an MCP server at runtime (stdio or http). */
+        post: operations["mcp_attach"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/mcp/catalog?q=` — Browse the curated MCP catalog. */
+        get: operations["mcp_catalog_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/catalog/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/mcp/catalog/{id}` — Full catalog entry. */
+        get: operations["mcp_catalog_detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/catalog/{id}/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/mcp/catalog/{id}/install` — Install a catalog entry (attaches under its id). */
+        post: operations["mcp_catalog_install"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** `PUT /api/v1/mcp/{name}` — Re-attach a server with a new configuration. */
+        put: operations["mcp_update"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1257,6 +1502,23 @@ export interface paths {
         post?: never;
         /** `DELETE /api/v1/notifications/{id}` — Dismiss a single notification. */
         delete: operations["notifications_dismiss"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/{id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/v1/notifications/{id}/read` — Mark a single notification read. */
+        post: operations["notifications_mark_read"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1393,7 +1655,8 @@ export interface paths {
         /** `GET /api/v1/plugins` — List discovered plugins. */
         get: operations["plugins_list"];
         put?: never;
-        post?: never;
+        /** `POST /api/v1/plugins` — Install a plugin from a pasted `plugin.toml`. */
+        post: operations["plugins_install"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1426,9 +1689,11 @@ export interface paths {
         };
         /** `GET /api/v1/plugins/{id}` — Plugin detail. */
         get: operations["plugins_detail"];
-        put?: never;
+        /** `PUT /api/v1/plugins/{id}` — Replace a user plugin's manifest in place. */
+        put: operations["plugins_update"];
         post?: never;
-        delete?: never;
+        /** `DELETE /api/v1/plugins/{id}` — Remove a user-installed plugin (core plugins refuse). */
+        delete: operations["plugins_remove"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1528,6 +1793,23 @@ export interface paths {
         };
         /** `GET /api/v1/prefs/stats` — Aggregate proposal counts. */
         get: operations["prefs_stats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/providers` — List built-in and catalog LLM providers. */
+        get: operations["providers_list"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2115,6 +2397,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspace-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/workspace-grants` — List active folder-access grants. */
+        get: operations["workspace_grants_list"];
+        put?: never;
+        /**
+         * `POST /api/v1/workspace-grants` — Grant a host directory to one agent, or to
+         *     every agent when `agent_name` is omitted.
+         * @description Returns 409 Conflict when an active grant already exists for the same
+         *     (path, agent scope), and 400 for a relative path or a system root.
+         */
+        post: operations["workspace_grants_add"];
+        /**
+         * `DELETE /api/v1/workspace-grants?path=…&agent_name=…` — Revoke a grant.
+         * @description Matches on the (path, agent scope) pair rather than a row id, mirroring
+         *     `agentos workspace revoke`: omit `agent_name` to revoke the global grant.
+         */
+        delete: operations["workspace_grants_revoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ws/ticket": {
         parameters: {
             query?: never;
@@ -2157,6 +2467,10 @@ export interface components {
             path_glob?: string | null;
             /** @description Tool this standing grant auto-approves (matched exactly). */
             tool_name: string;
+        };
+        /** @description Register a connector from a pasted manifest TOML. */
+        AddConnectorRequest: {
+            manifest_toml: string;
         };
         ApiAgentDetail: {
             cost_snapshot?: Record<string, never> | null;
@@ -2343,6 +2657,11 @@ export interface components {
             /** Format: date-time */
             expires_at?: string | null;
             id: string;
+            /**
+             * @description Raw manifest TOML, when the connector was installed from a file the
+             *     kernel owns — the panel prefills its edit form with this.
+             */
+            manifest_toml?: string | null;
             name: string;
             provider?: string | null;
             scopes: string[];
@@ -2536,6 +2855,17 @@ export interface components {
             revoked: boolean;
             scopes: string[];
         };
+        ApiMcpCatalogEntry: {
+            description: string;
+            display_name: string;
+            homepage?: string | null;
+            id: string;
+            /** @description A server named after this catalog id is attached (live or persisted). */
+            installed: boolean;
+            runtime?: string | null;
+            transport: string;
+            trust_tier: string;
+        };
         /** @description A running MCP server merged with its persisted attachment record. */
         ApiMcpServer: {
             /** @description stdio command args. */
@@ -2547,6 +2877,16 @@ export interface components {
              * @description When the attachment was persisted, if persisted.
              */
             created_at?: string | null;
+            /**
+             * @description Names of the persisted env vars. Values are withheld: they routinely
+             *     hold secrets. An edit that omits `env` keeps them.
+             */
+            env_keys: string[];
+            /**
+             * @description A static bearer token is stored for this server. The token itself is
+             *     never returned — an edit that omits `auth_token` keeps it.
+             */
+            has_auth_token: boolean;
             /** @description Logical server name (the attach key). */
             name: string;
             /** @description Optional supervisor note (e.g. reconnect attempt count). */
@@ -2617,6 +2957,21 @@ export interface components {
             /** @description RFC3339 last-updated timestamp. */
             updated_at: string;
         };
+        ApiPairingEntry: {
+            approved_at: string;
+            channel_id: string;
+            label?: string | null;
+            sender_id: string;
+        };
+        ApiPairings: {
+            approved: components["schemas"]["ApiPairingEntry"][];
+            pending: components["schemas"]["ApiPendingPairing"][];
+        };
+        ApiPendingPairing: {
+            channel_id: string;
+            expires_at: string;
+            sender_id: string;
+        };
         ApiPipelineSummary: {
             description?: string | null;
             name: string;
@@ -2630,6 +2985,8 @@ export interface components {
             description: string;
             display_name: string;
             id: string;
+            /** @description Raw `plugin.toml`, for prefilling an edit form. */
+            manifest_toml?: string | null;
             memory_backend: boolean;
             permissions: string[];
             status: string;
@@ -2695,6 +3052,26 @@ export interface components {
             /** Format: int64 */
             rejected: number;
         };
+        /**
+         * @description One LLM provider available to `POST /api/v1/agents` — either a built-in
+         *     adapter (`source = "built-in"`) or an entry from `config/providers.toml`
+         *     (`source = "catalog"`).
+         */
+        ApiProvider: {
+            /** @description Environment variable the API key is read from (empty for local providers). */
+            api_key_env?: string;
+            /** @description Whether a key is present for `api_key_env` (never the key itself). */
+            api_key_set: boolean;
+            /** @description Wire protocol a catalog provider speaks (e.g. `"openai"`); empty for built-ins. */
+            compatible_with?: string;
+            default_model?: string;
+            display_name: string;
+            /** @description Models the catalog lists for this provider; empty for built-ins. */
+            models?: string[];
+            name: string;
+            /** @description `"built-in"` or `"catalog"`. */
+            source: string;
+        };
         /** @description A reusable role that groups a set of permissions. */
         ApiRole: {
             /** Format: date-time */
@@ -2713,6 +3090,12 @@ export interface components {
             status: string;
             task_id?: string | null;
         };
+        /**
+         * @description The wire vocabulary for a schedule's state (same rationale as
+         *     [`crate::types::ApiTaskStatus`] — a closed set the panel can be typed against).
+         * @enum {string}
+         */
+        ApiScheduleState: "active" | "paused" | "disabled" | "pending" | "fired" | "cancelled";
         /**
          * @description A single scheduled entry as returned by `GET /api/v1/schedules` — a
          *     recurring cron job, a one-shot once-job, or an in-memory timer.
@@ -2735,7 +3118,7 @@ export interface components {
             /** Format: int64 */
             run_count: number;
             /** @description `active` | `paused` | `disabled` for cron; `pending` for once/timer. */
-            state: string;
+            state: components["schemas"]["ApiScheduleState"];
         };
         /**
          * @description A full scratchpad page plus its backlinks. Mirrors `agentos_scratch::ScratchPage`
@@ -2800,13 +3183,24 @@ export interface components {
             prompt: string;
             /** @description The agent's final answer when `status == "complete"`. */
             result?: string | null;
-            status: string;
+            status: components["schemas"]["ApiTaskStatus"];
             /**
              * @description Event type that triggered this task, if it was created by an event
              *     subscription (e.g. `DiskSpaceLow`). Absent for user/scheduled tasks.
              */
             trigger_event_type?: string | null;
         };
+        /**
+         * @description The wire vocabulary for a task's lifecycle state.
+         *
+         *     A typed enum, not a bare `String`: the panel's filter chips used to send
+         *     `completed` while the API says `complete`, which silently returned zero rows
+         *     for months. As an enum it lands in `openapi.json` as a closed set, the
+         *     generated TypeScript is a union, and that class of drift becomes a compile
+         *     error on both sides.
+         * @enum {string}
+         */
+        ApiTaskStatus: "queued" | "running" | "waiting" | "suspended" | "complete" | "failed" | "cancelled";
         ApiTaskSummary: {
             agent_name?: string | null;
             /** Format: date-time */
@@ -2817,7 +3211,7 @@ export interface components {
             error?: string | null;
             id: string;
             prompt_preview: string;
-            status: string;
+            status: components["schemas"]["ApiTaskStatus"];
         };
         ApiToolSummary: {
             author: string;
@@ -2870,6 +3264,44 @@ export interface components {
             /** @description Currently always `saved`; reserved for future lifecycle states. */
             status: string;
             version: string;
+        };
+        /** @description An active grant authorising filesystem access to one or all agents. */
+        ApiWorkspaceGrant: {
+            /** @description Agent UUID this grant is scoped to; `null` means every agent. */
+            agent_id?: string | null;
+            /** Format: date-time */
+            granted_at: string;
+            granted_by: string;
+            /** Format: int64 */
+            id: number;
+            /** @description Permission bits as a short string: any of `r`, `w`, `x` (e.g. `"rw"`). */
+            mode: string;
+            /** @description Absolute, lexically-normalized host directory. Subpaths are covered. */
+            path: string;
+            /** @description Where the grant came from (`config`, `bus`, `api`). */
+            source: string;
+        };
+        /**
+         * @description Attach a new MCP server at runtime (mirrors `agentos mcp attach`).
+         *     Exactly one of `command` (stdio) or `url` (http) must be set.
+         */
+        AttachMcpRequest: {
+            args?: string[];
+            /** @description Static Bearer token for http transport; stored in the vault by the kernel. */
+            auth_token?: string | null;
+            command?: string | null;
+            /**
+             * @description Subprocess env; `vault:KEY` values are resolved from the vault at attach
+             *     time. On an edit, omit it to keep the stored env untouched.
+             */
+            env?: {
+                [key: string]: string;
+            } | null;
+            name: string;
+            oauth_connector_id?: string | null;
+            /** Format: int64 */
+            timeout_secs?: number | null;
+            url?: string | null;
         };
         AuditEntryDetail: {
             agent_id?: string | null;
@@ -2932,6 +3364,25 @@ export interface components {
             roles?: string[];
             system_prompt?: string | null;
             thinking_level?: string;
+        };
+        /** @description Register a bidirectional channel (mirrors `agentos channel connect`). */
+        ConnectChannelRequest: {
+            active_agent_name?: string | null;
+            /**
+             * @description Inline credential; stored in the vault under `credential_key`
+             *     (or `channel.<kind>.<display-name-slug>` when that is empty) before connecting.
+             */
+            credential?: string | null;
+            /** @description Vault key holding the bot token / password. */
+            credential_key?: string | null;
+            display_name: string;
+            /** @description Telegram chat_id, ntfy topic, email address. Optional for Telegram. */
+            external_id?: string | null;
+            /** @description telegram | ntfy | email | discord | slack | whatsapp | webhook */
+            kind: string;
+            reply_topic?: string | null;
+            server_url?: string | null;
+            webhook_url?: string | null;
         };
         /** @description A per-agent daily budget snapshot. */
         CostBudget: {
@@ -3339,6 +3790,11 @@ export interface components {
                 /** Format: date-time */
                 expires_at?: string | null;
                 id: string;
+                /**
+                 * @description Raw manifest TOML, when the connector was installed from a file the
+                 *     kernel owns — the panel prefills its edit form with this.
+                 */
+                manifest_toml?: string | null;
                 name: string;
                 provider?: string | null;
                 scopes: string[];
@@ -3498,6 +3954,32 @@ export interface components {
          *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
          *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
          */
+        Envelope_ApiPairingEntry: {
+            data: {
+                approved_at: string;
+                channel_id: string;
+                label?: string | null;
+                sender_id: string;
+            };
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_ApiPairings: {
+            data: {
+                approved: components["schemas"]["ApiPairingEntry"][];
+                pending: components["schemas"]["ApiPendingPairing"][];
+            };
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
         Envelope_ApiPluginDetail: {
             /** @description Full plugin detail. */
             data: {
@@ -3507,12 +3989,45 @@ export interface components {
                 description: string;
                 display_name: string;
                 id: string;
+                /** @description Raw `plugin.toml`, for prefilling an edit form. */
+                manifest_toml?: string | null;
                 memory_backend: boolean;
                 permissions: string[];
                 status: string;
                 tools: string[];
                 trust_tier: string;
                 user_installed: boolean;
+                version: string;
+            };
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_ApiPluginSummary: {
+            /** @description Summary row for a discovered/active plugin. */
+            data: {
+                /** @description Populated only when `status == "blocked"`. */
+                blocked_reason?: string | null;
+                /** @description Channel ids declared by this plugin. */
+                channels: string[];
+                /** @description One-line description. */
+                description: string;
+                /** @description Human-readable display name. */
+                display_name: string;
+                /** @description Unique plugin id (kebab-case). */
+                id: string;
+                /** @description Lifecycle status: `discovered` | `active` | `disabled` | `blocked`. */
+                status: string;
+                /** @description Tool manifest paths declared by this plugin. */
+                tools: string[];
+                /** @description Trust tier: `core` | `verified` | `community` | `blocked`. */
+                trust_tier: string;
+                /** @description Manifest lives under `plugins/user/` (installed by an operator; removable). */
+                user_installed: boolean;
+                /** @description Semver version string. */
                 version: string;
             };
         };
@@ -3586,7 +4101,7 @@ export interface components {
                 /** Format: int64 */
                 run_count: number;
                 /** @description `active` | `paused` | `disabled` for cron; `pending` for once/timer. */
-                state: string;
+                state: components["schemas"]["ApiScheduleState"];
             };
         };
         /**
@@ -3662,7 +4177,7 @@ export interface components {
                 prompt: string;
                 /** @description The agent's final answer when `status == "complete"`. */
                 result?: string | null;
-                status: string;
+                status: components["schemas"]["ApiTaskStatus"];
                 /**
                  * @description Event type that triggered this task, if it was created by an event
                  *     subscription (e.g. `DiskSpaceLow`). Absent for user/scheduled tasks.
@@ -3692,6 +4207,30 @@ export interface components {
                 status: string;
                 trust_tier: string;
                 version: string;
+            };
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_ApiWorkspaceGrant: {
+            /** @description An active grant authorising filesystem access to one or all agents. */
+            data: {
+                /** @description Agent UUID this grant is scoped to; `null` means every agent. */
+                agent_id?: string | null;
+                /** Format: date-time */
+                granted_at: string;
+                granted_by: string;
+                /** Format: int64 */
+                id: number;
+                /** @description Permission bits as a short string: any of `r`, `w`, `x` (e.g. `"rw"`). */
+                mode: string;
+                /** @description Absolute, lexically-normalized host directory. Subpaths are covered. */
+                path: string;
+                /** @description Where the grant came from (`config`, `bus`, `api`). */
+                source: string;
             };
         };
         /**
@@ -3912,6 +4451,30 @@ export interface components {
                 name: string;
                 /** @description Permission scopes granted to the key. */
                 scopes: string[];
+            };
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_McpAttachedResponse: {
+            data: {
+                name: string;
+                tools: string[];
+            };
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_OAuthStartResponse: {
+            /** @description Response of `POST /connectors/{id}/oauth/start`. */
+            data: {
+                authorize_url: string;
             };
         };
         /**
@@ -4244,6 +4807,25 @@ export interface components {
          *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
          *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
          */
+        Envelope_Vec_ApiMcpCatalogEntry: {
+            data: {
+                description: string;
+                display_name: string;
+                homepage?: string | null;
+                id: string;
+                /** @description A server named after this catalog id is attached (live or persisted). */
+                installed: boolean;
+                runtime?: string | null;
+                transport: string;
+                trust_tier: string;
+            }[];
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
         Envelope_Vec_ApiMcpServer: {
             data: {
                 /** @description stdio command args. */
@@ -4255,6 +4837,16 @@ export interface components {
                  * @description When the attachment was persisted, if persisted.
                  */
                 created_at?: string | null;
+                /**
+                 * @description Names of the persisted env vars. Values are withheld: they routinely
+                 *     hold secrets. An edit that omits `env` keeps them.
+                 */
+                env_keys: string[];
+                /**
+                 * @description A static bearer token is stored for this server. The token itself is
+                 *     never returned — an edit that omits `auth_token` keeps it.
+                 */
+                has_auth_token: boolean;
                 /** @description Logical server name (the attach key). */
                 name: string;
                 /** @description Optional supervisor note (e.g. reconnect attempt count). */
@@ -4387,6 +4979,29 @@ export interface components {
          *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
          *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
          */
+        Envelope_Vec_ApiProvider: {
+            data: {
+                /** @description Environment variable the API key is read from (empty for local providers). */
+                api_key_env?: string;
+                /** @description Whether a key is present for `api_key_env` (never the key itself). */
+                api_key_set: boolean;
+                /** @description Wire protocol a catalog provider speaks (e.g. `"openai"`); empty for built-ins. */
+                compatible_with?: string;
+                default_model?: string;
+                display_name: string;
+                /** @description Models the catalog lists for this provider; empty for built-ins. */
+                models?: string[];
+                name: string;
+                /** @description `"built-in"` or `"catalog"`. */
+                source: string;
+            }[];
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
         Envelope_Vec_ApiRole: {
             data: {
                 /** Format: date-time */
@@ -4438,7 +5053,7 @@ export interface components {
                 /** Format: int64 */
                 run_count: number;
                 /** @description `active` | `paused` | `disabled` for cron; `pending` for once/timer. */
-                state: string;
+                state: components["schemas"]["ApiScheduleState"];
             }[];
         };
         /**
@@ -4533,6 +5148,29 @@ export interface components {
                 /** @description Currently always `saved`; reserved for future lifecycle states. */
                 status: string;
                 version: string;
+            }[];
+        };
+        /**
+         * @description Success envelope wrapping a response payload under a `data` key.
+         *
+         *     `T` is the inner payload type (a single DTO, a `Vec<DTO>` for lists, or
+         *     `serde_json::Value` for ad-hoc acknowledgement bodies like `{ "ok": true }`).
+         */
+        Envelope_Vec_ApiWorkspaceGrant: {
+            data: {
+                /** @description Agent UUID this grant is scoped to; `null` means every agent. */
+                agent_id?: string | null;
+                /** Format: date-time */
+                granted_at: string;
+                granted_by: string;
+                /** Format: int64 */
+                id: number;
+                /** @description Permission bits as a short string: any of `r`, `w`, `x` (e.g. `"rw"`). */
+                mode: string;
+                /** @description Absolute, lexically-normalized host directory. Subpaths are covered. */
+                path: string;
+                /** @description Where the grant came from (`config`, `bus`, `api`). */
+                source: string;
             }[];
         };
         /**
@@ -4703,6 +5341,18 @@ export interface components {
             /** @description Id of the newly created forked session. */
             id: string;
         };
+        /** @description Request body for `POST /api/v1/workspace-grants`. */
+        GrantWorkspaceRequest: {
+            /** @description Agent display name or `AgentID` UUID. Omit for a global grant. */
+            agent_name?: string | null;
+            /** @description Permission bits: any combination of `r`, `w`, `x`. Defaults to `rw`. */
+            mode?: string | null;
+            /**
+             * @description Absolute host path. `~` is NOT expanded — the caller is a browser, not
+             *     a shell, so it has no home directory to expand against.
+             */
+            path: string;
+        };
         /** @description A registered HAL device and its per-agent access policy. */
         HalDevice: {
             denied_to: string[];
@@ -4720,6 +5370,15 @@ export interface components {
         };
         ImportPipelineRequest: {
             yaml: string;
+        };
+        InstallMcpRequest: {
+            allow_community?: boolean;
+            no_auth?: boolean;
+            runtime_binary?: string | null;
+        };
+        /** @description Install a plugin from a pasted `plugin.toml`. */
+        InstallPluginRequest: {
+            manifest_toml: string;
         };
         InstallToolRequest: {
             manifest_path: string;
@@ -4878,7 +5537,7 @@ export interface components {
                 error?: string | null;
                 id: string;
                 prompt_preview: string;
-                status: string;
+                status: components["schemas"]["ApiTaskStatus"];
             }[];
             /** @description Pagination metadata. */
             meta: components["schemas"]["Meta"];
@@ -4899,6 +5558,10 @@ export interface components {
         LoginRequest: {
             /** @description The operator credential (deployment auth token). */
             credential: string;
+        };
+        McpAttachedResponse: {
+            name: string;
+            tools: string[];
         };
         /** @description List metadata accompanying a paginated response. */
         Meta: {
@@ -4933,6 +5596,10 @@ export interface components {
              */
             task_id?: string | null;
             timestamp: string;
+        };
+        /** @description Response of `POST /connectors/{id}/oauth/start`. */
+        OAuthStartResponse: {
+            authorize_url: string;
         };
         OpenAIChatRequest: {
             /** Format: int32 */
@@ -5098,15 +5765,42 @@ export interface components {
         SendChatMessageRequest: {
             text: string;
         };
+        SetChannelAgentRequest: {
+            /** @description Agent name; omit or empty to clear the default. */
+            agent_name?: string | null;
+        };
         /** @description Request body for `PUT /api/v1/config/{key}`. */
         SetConfigRequest: {
             /** @description The new value to write at the dotted key. */
             value: Record<string, never>;
         };
+        /**
+         * @description No `Debug`/`Clone`/`Serialize`: `Zeroizing` has no `Clone`, a derived `Debug`
+         *     would print the plaintext secret into any log line that formats the request,
+         *     and `Serialize` would let `serde_json::to_string` re-emit it just as easily.
+         */
         SetSecretRequest: {
             name: string;
-            scope?: string;
+            /**
+             * @description `global` | `kernel` | `agent:<name>` | `tool:<name>`. REQUIRED — there is
+             *     deliberately no default, because `global` makes the secret readable by
+             *     every agent and tool on the host (same rule as the CLI's `--scope`).
+             */
+            scope: string;
+            /** @description Zeroized on drop; wire type is a plain JSON string. */
             value: string;
+        };
+        /** @description Store an OAuth credential by hand (mirrors `agentos mcp oauth-store`). */
+        StoreCredentialRequest: {
+            access_token: string;
+            client_id?: string | null;
+            client_secret?: string | null;
+            /** Format: int64 */
+            expires_in_secs?: number | null;
+            provider?: string | null;
+            refresh_token?: string | null;
+            scopes?: string[];
+            token_endpoint?: string | null;
         };
         /** @description Request body for submitting a marketplace review. */
         SubmitReviewRequest: {
@@ -5139,7 +5833,7 @@ export interface components {
             limit?: number | null;
             /** Format: int32 */
             offset?: number | null;
-            status?: string | null;
+            status?: null | components["schemas"]["ApiTaskStatus"];
         };
         /**
          * @description Partial update of an agent's mutable profile settings.
@@ -5154,6 +5848,28 @@ export interface components {
             /** @description `None` leaves the prompt untouched; `Some("")` clears it. */
             system_prompt?: string | null;
             thinking_level?: string | null;
+        };
+        /**
+         * @description Edit a connected channel in place (`PUT /channels/{id}`).
+         *
+         *     Three-state per field: omitted leaves it unchanged, `""` clears it, a value
+         *     sets it. `kind` is not editable — a different kind is a different adapter,
+         *     so that is a disconnect + connect.
+         */
+        UpdateChannelRequest: {
+            active_agent_name?: string | null;
+            /**
+             * @description New inline credential, stored under the channel's existing vault key.
+             *     Omit to keep the stored secret untouched.
+             */
+            credential?: string | null;
+            /** @description Vault key holding the credential. Omit to keep the current one. */
+            credential_key?: string | null;
+            display_name?: string | null;
+            external_id?: string | null;
+            reply_topic?: string | null;
+            server_url?: string | null;
+            webhook_url?: string | null;
         };
         /** @description One-shot secret response, returned only on create/rotate. */
         WebhookSecretResponse: {
@@ -5540,7 +6256,10 @@ export interface operations {
     };
     agents_disconnect: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description `true` wipes the agent instead of parking it offline. Irreversible. */
+                purge?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Agent name */
@@ -5550,7 +6269,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Agent disconnected */
+            /** @description Agent disconnected or removed */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6298,6 +7017,127 @@ export interface operations {
             };
         };
     };
+    channels_connect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectChannelRequest"];
+            };
+        };
+        responses: {
+            /** @description Channel connected */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiChannelSummary"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Adapter failed to start */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    channels_pairings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pairings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiPairings"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    channels_approve_pairing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 6-character pairing code */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiPairingEntry"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unknown or expired code */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     channels_detail: {
         parameters: {
             query?: never;
@@ -6329,6 +7169,114 @@ export interface operations {
                 };
             };
             /** @description Channel not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    channels_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Channel instance id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChannelRequest"];
+            };
+        };
+        responses: {
+            /** @description Channel updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiChannelSummary"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Channel not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Adapter failed to start */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    channels_set_agent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Channel instance id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetChannelAgentRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Channel or agent not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6380,6 +7328,142 @@ export interface operations {
             };
             /** @description Channel not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    channels_revoke_pairing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Channel instance id */
+                id: string;
+                /** @description External sender id */
+                sender_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    channels_approve_pending_pairing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Channel instance id */
+                id: string;
+                /** @description External sender id of the pending request */
+                sender_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiPairingEntry"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No pending request for this sender, or it expired */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    channels_test: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Channel instance id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Test message delivered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Delivery failed */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7000,6 +8084,57 @@ export interface operations {
             };
         };
     };
+    connectors_add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddConnectorRequest"];
+            };
+        };
+        responses: {
+            /** @description Registered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiConnectorDetail"];
+                };
+            };
+            /** @description Invalid manifest */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Already registered */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     connectors_detail: {
         parameters: {
             query?: never;
@@ -7041,6 +8176,146 @@ export interface operations {
             };
         };
     };
+    connectors_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Connector id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddConnectorRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiConnectorDetail"];
+                };
+            };
+            /** @description Invalid manifest or id mismatch */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    connectors_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Connector id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    connectors_store_credential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Connector id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StoreCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     connectors_disconnect: {
         parameters: {
             query?: never;
@@ -7064,6 +8339,89 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    connectors_oauth_callback: {
+        parameters: {
+            query?: {
+                code?: string | null;
+                state?: string | null;
+                error?: string | null;
+                error_description?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description Connector / provider id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Plain-text result when no panel origin is configured */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Redirect to the panel with `?oauth=ok|error` */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    connectors_oauth_start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Connector / provider id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authorize URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_OAuthStartResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No provider configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Provider misconfigured (client id env unset) */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8236,6 +9594,246 @@ export interface operations {
             };
         };
     };
+    mcp_attach: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachMcpRequest"];
+            };
+        };
+        responses: {
+            /** @description Server attached; lists registered tool names */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_McpAttachedResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Attach failed (duplicate name, handshake, vault) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_catalog_list: {
+        parameters: {
+            query?: {
+                q?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Catalog entries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Vec_ApiMcpCatalogEntry"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_catalog_detail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Catalog entry id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Catalog entry */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_catalog_install: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Catalog entry id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstallMcpRequest"];
+            };
+        };
+        responses: {
+            /** @description Installed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_McpAttachedResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Install refused (trust tier, runtime, attach) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachMcpRequest"];
+            };
+        };
+        responses: {
+            /** @description Server re-attached */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_McpAttachedResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Server not attached */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description New configuration failed to attach */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     mcp_detach: {
         parameters: {
             query?: never;
@@ -8498,6 +10096,47 @@ export interface operations {
             };
             /** @description Notification not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    notifications_mark_read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Notification ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Idempotent; `updated` = false when no such notification */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8939,6 +10578,57 @@ export interface operations {
             };
         };
     };
+    plugins_install: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstallPluginRequest"];
+            };
+        };
+        responses: {
+            /** @description Installed (status may be `blocked` if unsigned) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiPluginSummary"];
+                };
+            };
+            /** @description Invalid manifest */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Plugin id already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     plugins_discover: {
         parameters: {
             query?: never;
@@ -9000,6 +10690,119 @@ export interface operations {
             };
             /** @description Plugin not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    plugins_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Plugin id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstallPluginRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiPluginSummary"];
+                };
+            };
+            /** @description Invalid manifest or id mismatch */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Built-in plugin */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    plugins_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Plugin id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Not a user-installed plugin */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9250,6 +11053,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Envelope_ApiProposalStats"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    providers_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available LLM providers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Vec_ApiProvider"];
                 };
             };
             /** @description Unauthorized */
@@ -10113,7 +11945,7 @@ export interface operations {
     tasks_list: {
         parameters: {
             query?: {
-                status?: string;
+                status?: components["schemas"]["ApiTaskStatus"];
                 agent_name?: string;
                 limit?: number;
                 offset?: number;
@@ -10984,6 +12816,151 @@ export interface operations {
                 };
             };
             /** @description Workflow not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    workspace_grants_list: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Agent display name or UUID; returns that agent's grants plus the global
+                 *     ones. Omit to list every active grant.
+                 */
+                agent_name?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active workspace grants */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Vec_ApiWorkspaceGrant"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    workspace_grants_add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantWorkspaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Grant created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiWorkspaceGrant"];
+                };
+            };
+            /** @description Invalid path or mode */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Grant already exists for this scope */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    workspace_grants_revoke: {
+        parameters: {
+            query: {
+                path: string;
+                agent_name?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Grant revoked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Value"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No active grant for this path and scope */
             404: {
                 headers: {
                     [name: string]: unknown;

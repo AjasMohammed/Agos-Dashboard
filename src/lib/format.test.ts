@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { bytes, tokens, usd, relativeTime, stripUserDataTags, prettyJson } from "./format";
+import { bytes, tokens, usd, relativeTime, stripUserDataTags, prettyJson, flattenConfig, configValue } from "./format";
 
 describe("formatters", () => {
   it("formats bytes", () => {
@@ -42,5 +42,30 @@ describe("formatters", () => {
     const out = prettyJson(huge)!;
     expect(out.length).toBeLessThan(21_000);
     expect(out).toContain("more characters truncated");
+  });
+
+  it("flattens a config tree to dotted keys", () => {
+    const leaves = flattenConfig({
+      api: { port: 8080, cors: ["a", "b"] },
+      hal: { raw_usb: { allow: [] } },
+      approval: { agent_overrides: {} },
+      nothing: null,
+    });
+    expect(leaves).toEqual([
+      { key: "api.port", value: 8080 },
+      { key: "api.cors", value: ["a", "b"] },
+      { key: "hal.raw_usb.allow", value: [] },
+      { key: "approval.agent_overrides", value: {} },
+      { key: "nothing", value: null },
+    ]);
+  });
+
+  it("displays config values compactly, rounding f32 noise", () => {
+    expect(configValue(0.30000001192092896)).toBe("0.3");
+    expect(configValue(8080)).toBe("8080");
+    expect(configValue(true)).toBe("true");
+    expect(configValue("locked")).toBe("locked");
+    expect(configValue(["a", "b"])).toBe('["a","b"]');
+    expect(configValue(null)).toBe("—");
   });
 });

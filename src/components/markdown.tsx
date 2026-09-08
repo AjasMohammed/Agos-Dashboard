@@ -1,13 +1,67 @@
 import { memo, useState } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { ImageOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+// Bundled, not a CDN link: the panel has to render math offline. KaTeX's stylesheet
+// declares no colors, so formulas inherit the bubble's text color in both themes.
+import "katex/dist/katex.min.css";
 
-// remark-breaks renders single newlines as line breaks (chat-style), matching the
-// whitespace-pre-wrap behavior plain-text agent replies relied on before.
-const plugins = [remarkGfm, remarkBreaks];
+/**
+ * `singleDollarTextMath: false` — a single `$…$` is NOT math here.
+ *
+ * remark-math's default is greedy in exactly the way that hurts a chat log:
+ * "it costs $5 and $10 today" parses `$5 and $` as a formula and the sentence
+ * turns into gibberish. Agents talk about money far more often than they write
+ * bare `$x$`, so single dollars stay literal. `$$…$$` (inline and display) and
+ * the LaTeX delimiters below still render.
+ */
+const plugins: Options["remarkPlugins"] = [remarkGfm, remarkBreaks, [remarkMath, { singleDollarTextMath: false }]];
+
+// `errorColor` (not a stylesheet override) so a malformed formula is legible red on
+// both themes; `throwOnError: false` is KaTeX's default but is stated for the same
+// reason the guard exists — a bad formula must not take the transcript down.
+const rehypePlugins: Options["rehypePlugins"] = [[rehypeKatex, { throwOnError: false, errorColor: "#e5484d" }]];
+/** Same pipeline without the math passes — see the `math` prop on `Markdown`. */
+const plainPlugins: Options["remarkPlugins"] = [remarkGfm, remarkBreaks];
+
+/**
+ * Rewrite LaTeX delimiters to dollar math before parsing.
+ *
+ * This cannot be done in a plugin: CommonMark eats `\(` as an escaped `(` during
+ * parse, so by the time there is an mdast the delimiters are already gone.
+ * The split keeps code spans and fences (odd indices) untouched.
+ *
+ * ponytail: regex, not a parser. `\(` inside a *indented* code block still gets
+ * rewritten — switch to a micromark extension if that ever shows up for real.
+ */
+function normalizeMath(md: string): string {
+  // A streamed reply is re-rendered on every chunk, so this runs constantly
+  // against *partial* markdown. The split below only recognises a fenced block
+  // when its closing ``` has arrived; while a fence is still open the regex
+  // falls through to the inline-code alternative and the block's contents get
+  // treated as prose — rewriting `\(x\)` inside a code sample into a formula
+  // that snaps back once the fence closes. So: cut the input at the last
+  // unterminated fence and leave that tail untouched.
+  const fences = md.match(/```/g)?.length ?? 0;
+  if (fences % 2 === 1) {
+    const open = md.lastIndexOf("```");
+    return normalizeMath(md.slice(0, open)) + md.slice(open);
+  }
+  return md
+    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part
+            .replace(/\\\[([\s\S]+?)\\\]/g, (_, m: string) => `\n$$\n${m.trim()}\n$$\n`)
+            .replace(/\\\(([\s\S]+?)\\\)/g, (_, m: string) => `$$${m}$$`),
+    )
+    .join("");
+}
 
 /**
  * The host a src would be fetched from, or `null` if it is ours.
@@ -80,7 +134,9 @@ const components: Components = {
     </a>
   ),
   blockquote: ({ children }) => (
-    <blockquote className="border-l-2 border-border pl-3 text-muted-foreground">{children}</blockquote>
+    <blockquote className="border-l-2 border-border pl-3 text-muted-foreground">
+      {children}
+    </blockquote>
   ),
   code: ({ className, children }) => (
     <code className={cn("rounded bg-foreground/10 px-1 py-0.5 font-mono text-xs", className)}>
@@ -122,14 +178,30 @@ const components: Components = {
 export const Markdown = memo(function Markdown({
   children,
   className,
+  math = true,
 }: {
   children: string;
   className?: string;
+  /**
+   * Render LaTeX. Pass `false` for text that is still streaming: the whole
+   * string is re-normalised and re-parsed (KaTeX included) on every chunk,
+   * which is O(n²) over a long reply. The settled bubble renders with math on.
+   */
+  math?: boolean;
 }) {
   return (
-    <div className={cn("space-y-2 break-words", className)}>
-      <ReactMarkdown remarkPlugins={plugins} components={components}>
-        {children}
+    <div
+      className={cn(
+        "space-y-2 break-words [&_.katex-display]:overflow-x-auto [&_.katex-display]:py-1",
+        className,
+      )}
+    >
+      <ReactMarkdown
+        remarkPlugins={math ? plugins : plainPlugins}
+        rehypePlugins={math ? rehypePlugins : undefined}
+        components={components}
+      >
+        {math ? normalizeMath(children) : children}
       </ReactMarkdown>
     </div>
   );

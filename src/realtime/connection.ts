@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 import { useAuthStore } from "@/auth/store";
 import { ApiError, client, unwrap } from "@/api/client";
 import type { ClientFrame, ConnectionStatus, ServerFrame } from "./protocol";
@@ -40,6 +41,17 @@ const MAX_BACKOFF_MS = 30_000;
 const HEARTBEAT_MS = 20_000;
 const WATCHDOG_MS = 45_000;
 const MAX_OUTBOX = 100;
+/** Consecutive auth-refused closes before we stop retrying and say so. */
+const MAX_AUTH_REFUSALS = 3;
+
+/**
+ * 1008 (policy violation) and the 44xx range are how the kernel refuses a
+ * socket whose ticket or key it does not accept. Anything else is a network
+ * event and retried with backoff.
+ */
+function isAuthClose(code: number | undefined): boolean {
+  return code === 1008 || code === 4401 || code === 4403;
+}
 
 /** Connection status surfaced to the topbar indicator. */
 export const useRealtimeStatus = create<{ status: ConnectionStatus; retryInSeconds: number }>(
@@ -54,6 +66,7 @@ const reconnectListeners = new Set<() => void>();
 let socket: WebSocket | null = null;
 let outbox: ClientFrame[] = [];
 let attempts = 0;
+let authRefusals = 0;
 let intentional = false;
 let initialized = false;
 
@@ -194,6 +207,7 @@ async function openWithAuth(gen: number, key: string) {
 
   ws.onopen = () => {
     attempts = 0;
+    authRefusals = 0;
     setStatus("open");
     const queued = outbox;
     outbox = [];
@@ -220,16 +234,33 @@ async function openWithAuth(gen: number, key: string) {
     /* surfaced via onclose */
   };
 
-  ws.onclose = () => {
+  ws.onclose = (ev?: CloseEvent) => {
     socket = null;
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (watchdogTimer) clearTimeout(watchdogTimer);
     heartbeatTimer = watchdogTimer = null;
     if (intentional || !useAuthStore.getState().apiKey) {
       setStatus("closed");
-    } else {
-      scheduleReconnect();
+      return;
     }
+    // A socket refused for its credentials is not a network blip: backing off
+    // forever just hammers the API with ticket mints. After a few refusals in a
+    // row, stop and tell the operator. (A revoked key still ends the session
+    // through the REST 401 path in client.ts; a single refusal is often just a
+    // ticket that expired between mint and connect, hence the allowance.)
+    if (isAuthClose(ev?.code)) {
+      authRefusals += 1;
+      if (authRefusals >= MAX_AUTH_REFUSALS) {
+        setStatus("closed");
+        toast.error("Live updates stopped", {
+          id: "ws-auth-refused",
+          description:
+            "The realtime socket keeps refusing this session's credentials. Sign out and back in to reconnect.",
+        });
+        return;
+      }
+    }
+    scheduleReconnect();
   };
 }
 
@@ -237,6 +268,7 @@ async function openWithAuth(gen: number, key: string) {
 export function connectRealtime(): void {
   if (socket || !useAuthStore.getState().apiKey) return;
   attempts = 0;
+  authRefusals = 0;
   open();
 }
 
@@ -291,6 +323,7 @@ export const __test = {
     socket = null;
     outbox = [];
     attempts = 0;
+    authRefusals = 0;
     intentional = false;
     initialized = false;
     frameListeners.clear();

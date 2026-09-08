@@ -10,6 +10,7 @@ import type {
   InboxMessage,
   MemoryItem,
   PageSummary,
+  Provider,
   ScratchPage,
   UpdateAgentSettingsRequest,
 } from "../models";
@@ -55,10 +56,26 @@ function invalidateAgentProfile(qc: QueryClient, name: string) {
   qc.invalidateQueries({ queryKey: agentKeys.all });
 }
 
-export function useAgents() {
+/**
+ * Built-in + `providers.toml` catalog providers. Static for the life of the
+ * kernel process, so it is cached indefinitely; the connect dialog reads it
+ * instead of a hardcoded list that drifts from the catalog.
+ */
+export const providerKeys = { all: ["providers"] as const };
+export function useProviders(enabled = true) {
+  return useQuery({
+    queryKey: providerKeys.all,
+    queryFn: async () => unwrap<Provider[]>(await client.GET("/api/v1/providers")),
+    enabled,
+    staleTime: Infinity,
+  });
+}
+
+export function useAgents(enabled = true) {
   return useQuery({
     queryKey: agentKeys.all,
     queryFn: async () => unwrap<AgentSummary[]>(await client.GET("/api/v1/agents")),
+    enabled,
     // Poll only while the WS is down (see useTasks) — keeps the list fresh
     // without redundant polling when realtime is healthy.
     refetchInterval: useDisconnectedPolling(),
@@ -90,6 +107,25 @@ export function useDisconnectAgent() {
   return useMutation({
     mutationFn: async (name: string) => {
       unwrap(await client.DELETE("/api/v1/agents/{name}", { params: { path: { name } } }));
+    },
+    onSuccess: (_d, name) => invalidateAgentProfile(qc, name),
+  });
+}
+
+/**
+ * Same endpoint as disconnect with `?purge=true`: deletes the profile, identity,
+ * memory, scratchpad, inboxes, checkpoints and schedules. Works on an offline
+ * agent (disconnect rejects those) and is irreversible.
+ */
+export function useRemoveAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (name: string) => {
+      unwrap(
+        await client.DELETE("/api/v1/agents/{name}", {
+          params: { path: { name }, query: { purge: true } },
+        }),
+      );
     },
     onSuccess: (_d, name) => invalidateAgentProfile(qc, name),
   });
@@ -194,13 +230,15 @@ export function useAgentMemory(name: string, tier: MemoryTier, q: string) {
     // put them outside the reach of `agentKeys.detail(name)`. The `{id}` path
     // segment resolves a name just as well.
     queryKey: agentKeys.memory(name, tier, trimmed),
-    queryFn: async () =>
+    // `signal`: a superseded search is cancelled, not run to completion.
+    queryFn: async ({ signal }) =>
       unwrap<MemoryItem[]>(
         await client.GET("/api/v1/agents/{id}/memory/{tier}", {
           params: {
             path: { id: name, tier },
             query: trimmed ? { q: trimmed } : {},
           },
+          signal,
         }),
       ),
     enabled: Boolean(name),

@@ -1,14 +1,12 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { motion } from "framer-motion";
-import { Check, Loader2 } from "lucide-react";
+import { Check, ChevronRight, Loader2 } from "lucide-react";
 import { useConnectAgent } from "@/api/queries/agents";
 import { useSetSecret } from "@/api/queries/system";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { EASE_OUT } from "@/components/motion";
 import { toastError } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 
@@ -27,6 +25,7 @@ const PROVIDERS = [
   {
     id: "anthropic",
     label: "Anthropic",
+    blurb: "Claude models",
     secret: "anthropic_api_key",
     keyHint: "sk-ant-…",
     keyUrl: "https://console.anthropic.com/settings/keys",
@@ -35,6 +34,7 @@ const PROVIDERS = [
   {
     id: "openai",
     label: "OpenAI",
+    blurb: "GPT models",
     secret: "openai_api_key",
     keyHint: "sk-…",
     keyUrl: "https://platform.openai.com/api-keys",
@@ -43,6 +43,7 @@ const PROVIDERS = [
   {
     id: "gemini",
     label: "Google Gemini",
+    blurb: "Gemini models",
     secret: "gemini_api_key",
     keyHint: "AIza…",
     keyUrl: "https://aistudio.google.com/apikey",
@@ -50,7 +51,8 @@ const PROVIDERS = [
   },
   {
     id: "ollama",
-    label: "Ollama (on this machine)",
+    label: "Ollama",
+    blurb: "Local models on this machine, no key needed",
     secret: "",
     keyHint: "",
     keyUrl: "",
@@ -63,12 +65,12 @@ type Provider = (typeof PROVIDERS)[number];
 function Steps({ step }: { step: number }) {
   const labels = ["Provider", "API key", "Model"];
   return (
-    <ol className="mb-6 flex items-center gap-2 text-xs">
+    <ol className="mb-5 flex items-center gap-2 text-xs" aria-label="Setup progress">
       {labels.map((l, i) => (
-        <li key={l} className="flex items-center gap-2">
+        <li key={l} className="flex items-center gap-2" aria-current={i === step ? "step" : undefined}>
           <span
             className={cn(
-              "flex size-5 items-center justify-center rounded-full border text-[10px]",
+              "flex size-5 items-center justify-center rounded-full border text-[10px] font-medium",
               i < step
                 ? "border-primary bg-primary text-primary-foreground"
                 : i === step
@@ -76,10 +78,10 @@ function Steps({ step }: { step: number }) {
                   : "border-border text-muted-foreground",
             )}
           >
-            {i < step ? <Check className="size-3" /> : i + 1}
+            {i < step ? <Check aria-hidden className="size-3" /> : i + 1}
           </span>
           <span className={cn(i === step ? "font-medium" : "text-muted-foreground")}>{l}</span>
-          {i < labels.length - 1 && <span className="w-4 border-t border-border" />}
+          {i < labels.length - 1 && <span aria-hidden className="w-5 border-t border-border" />}
         </li>
       ))}
     </ol>
@@ -123,7 +125,13 @@ export function WelcomePage() {
       // failed, user hits "Start chatting" again) skips the write instead of
       // overwriting the saved key with "".
       if (needsKey && apiKey.trim()) {
-        await setSecret.mutateAsync({ name: provider.secret, value: apiKey.trim() });
+        await setSecret.mutateAsync({
+          name: provider.secret,
+          value: apiKey.trim(),
+          // A provider key has to be readable by the kernel and by every agent
+          // that talks to that provider, so first-run onboarding writes global.
+          scope: "global",
+        });
         // It's in the vault now — drop both remaining copies: this form stays
         // mounted if `connect` below rejects, and react-query retains the
         // mutation's `variables` (the plaintext key) for the observer's
@@ -145,20 +153,20 @@ export function WelcomePage() {
   }
 
   return (
-    <div className="bg-grid relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute left-1/2 top-1/2 size-[480px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/15 blur-[120px]"
-      />
-      <motion.div
-        initial={{ opacity: 0, y: 16, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.35, ease: EASE_OUT }}
-        className="relative w-full max-w-md"
-      >
-        <Card className="border-border/80 shadow-lg">
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <div className="w-full max-w-md">
+        <div className="mb-6 flex items-center gap-3">
+          <span className="flex size-9 items-center justify-center rounded-md bg-primary text-base font-bold text-primary-foreground">
+            A
+          </span>
+          <div>
+            <p className="text-base font-semibold tracking-tight">AgentOS Control Panel</p>
+            <p className="text-xs text-muted-foreground">First-run setup</p>
+          </div>
+        </div>
+        <Card>
           <CardHeader>
-            <CardTitle className="text-lg tracking-tight">Set up your first assistant</CardTitle>
+            <CardTitle>Set up your first assistant</CardTitle>
             <CardDescription>
               Pick a model provider, add its key, and you can start chatting.
             </CardDescription>
@@ -169,52 +177,61 @@ export function WelcomePage() {
             {step === 0 && (
               <div className="grid gap-2">
                 {PROVIDERS.map((p) => (
-                  <Button
+                  <button
                     key={p.id}
-                    variant="outline"
-                    className="justify-start"
+                    type="button"
                     onClick={() => chooseProvider(p)}
+                    className="flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    {p.label}
-                  </Button>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium">{p.label}</span>
+                      <span className="block text-xs text-muted-foreground">{p.blurb}</span>
+                    </span>
+                    <ChevronRight aria-hidden className="size-4 text-muted-foreground" />
+                  </button>
                 ))}
               </div>
             )}
 
             {step === 1 && (
               <form
-                className="grid gap-3"
+                className="grid gap-4"
                 onSubmit={(e) => {
                   e.preventDefault();
                   setStep(2);
                 }}
               >
-                <div className="grid gap-1.5">
-                  <Label htmlFor="api-key">{provider.label} API key</Label>
+                <Field
+                  label={`${provider.label} API key`}
+                  hint={
+                    <>
+                      Stored encrypted in the vault as{" "}
+                      <code className="font-mono">{provider.secret}</code>. It is never shown again.{" "}
+                      {provider.keyUrl && (
+                        <a
+                          href={provider.keyUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline hover:text-foreground"
+                        >
+                          Get a key
+                        </a>
+                      )}
+                    </>
+                  }
+                >
                   <Input
                     id="api-key"
                     type="password"
                     autoComplete="off"
+                    spellCheck={false}
                     autoFocus
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder={keySaved ? "Saved — leave blank to keep it" : provider.keyHint}
+                    className="font-mono"
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Stored encrypted in the vault as{" "}
-                    <code className="font-mono">{provider.secret}</code>. It is never shown again.{" "}
-                    {provider.keyUrl && (
-                      <a
-                        href={provider.keyUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="underline hover:text-foreground"
-                      >
-                        Get a key
-                      </a>
-                    )}
-                  </p>
-                </div>
+                </Field>
                 <div className="flex justify-between">
                   <Button type="button" variant="ghost" onClick={() => setStep(0)}>
                     Back
@@ -231,36 +248,36 @@ export function WelcomePage() {
 
             {step === 2 && (
               <form
-                className="grid gap-3"
+                className="grid gap-4"
                 onSubmit={(e) => {
                   e.preventDefault();
                   void finish();
                 }}
               >
-                <div className="grid gap-1.5">
-                  <Label htmlFor="model">Model</Label>
+                <Field label="Model" hint="Free text with suggestions — model ids move faster than any list.">
                   <Input
                     id="model"
                     list="welcome-models"
                     value={model}
                     onChange={(e) => setModel(e.target.value)}
                     autoFocus
+                    spellCheck={false}
+                    className="font-mono"
                   />
-                  {/* Free text with suggestions — model ids move faster than this list. */}
-                  <datalist id="welcome-models">
-                    {provider.models.map((m) => (
-                      <option key={m} value={m} />
-                    ))}
-                  </datalist>
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="assistant-name">Call it</Label>
+                </Field>
+                <datalist id="welcome-models">
+                  {provider.models.map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+                <Field label="Name" hint="How this assistant appears in chat and in the agent list.">
                   <Input
                     id="assistant-name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
+                    spellCheck={false}
                   />
-                </div>
+                </Field>
                 <div className="flex justify-between">
                   <Button
                     type="button"
@@ -279,17 +296,26 @@ export function WelcomePage() {
             )}
           </CardContent>
         </Card>
-        <p className="mt-3 text-center text-xs text-muted-foreground">
+        <p className="mt-4 text-center text-xs text-muted-foreground">
           Want more options?{" "}
-          <button className="underline" onClick={() => navigate({ to: "/agents" as string })}>
+          <button
+            type="button"
+            className="cursor-pointer underline hover:text-foreground"
+            onClick={() => navigate({ to: "/agents" as string })}
+          >
             Add an assistant the long way
           </button>
           {" · "}
-          <button className="underline" disabled={busy} onClick={() => navigate({ to: "/" })}>
+          <button
+            type="button"
+            className="cursor-pointer underline hover:text-foreground"
+            disabled={busy}
+            onClick={() => navigate({ to: "/" })}
+          >
             Skip for now
           </button>
         </p>
-      </motion.div>
+      </div>
     </div>
   );
 }

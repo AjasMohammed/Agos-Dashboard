@@ -28,7 +28,7 @@ export function ArtifactPage() {
   const { id } = useParams({ from: "/app/artifacts/$id" });
   const query = useArtifact(id);
   return (
-    <div className="mx-auto w-full max-w-4xl">
+    <div className="w-full">
       <QueryState query={query}>
         {({ meta, text }) => {
           // The `artifact` tag is load-bearing, not decoration: without this
@@ -121,7 +121,7 @@ export function ArtifactsPage() {
                 const Icon = KIND_ICON[kind];
                 return (
                   <Link key={f.id} to="/artifacts/$id" params={{ id: f.id }} className="group">
-                    <Card className="flex h-full flex-col overflow-hidden group-hover:shadow-md">
+                    <Card className="flex h-full flex-col overflow-hidden transition-colors group-hover:border-muted-foreground/40">
                       <FileThumb file={f} />
                       <div className="flex flex-1 flex-col gap-1 border-t border-border p-3">
                         <p className="flex items-center gap-2 truncate text-sm font-medium group-hover:underline" title={f.original_name || f.name}>

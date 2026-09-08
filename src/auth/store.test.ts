@@ -2,9 +2,14 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { useAuthStore, grants, isAuthenticated } from "./store";
 
 describe("grants (scope semantics)", () => {
-  it("treats empty scopes as full access (bootstrap key)", () => {
-    expect(grants([], "agents:r")).toBe(true);
-    expect(grants([], "secrets:w")).toBe(true);
+  it("treats empty scopes as no access (mirrors require_permission's 403)", () => {
+    expect(grants([], "agents:r")).toBe(false);
+    expect(grants([], "secrets:w")).toBe(false);
+  });
+
+  it("treats a bare `*` as all resources, all ops (CLI bootstrap key)", () => {
+    expect(grants(["*"], "agents:r")).toBe(true);
+    expect(grants(["*"], "secrets:w")).toBe(true);
   });
 
   it("matches an exact resource:op scope", () => {

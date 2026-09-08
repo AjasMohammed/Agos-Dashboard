@@ -187,3 +187,30 @@ export function parseEventDetails(details: string | null | undefined): ParsedEve
   }
   return { kind: "text", text: trimmed };
 }
+
+/** One leaf of a config tree, addressed by the dotted key `PUT /config/{key}` takes. */
+export type ConfigLeaf = { key: string; value: unknown };
+
+/**
+ * Flatten a nested config document into dotted-key leaves — the same addressing
+ * `PUT /api/v1/config/{key}` uses, so a row doubles as a "set this" shortcut.
+ * Arrays and empty objects stay whole: they're written as one JSON value.
+ */
+export function flattenConfig(node: unknown, prefix = ""): ConfigLeaf[] {
+  if (node == null || typeof node !== "object" || Array.isArray(node))
+    return [{ key: prefix, value: node }];
+  const entries = Object.entries(node as Record<string, unknown>);
+  if (!entries.length) return [{ key: prefix, value: node }];
+  return entries.flatMap(([k, v]) => flattenConfig(v, prefix ? `${prefix}.${k}` : k));
+}
+
+/**
+ * Compact display string for a config leaf. Floats round for display: the kernel
+ * round-trips f32s, so a 0.3 comes back as 0.30000001192092896.
+ */
+export function configValue(v: unknown): string {
+  if (v == null) return "—";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" && !Number.isInteger(v)) return String(Number(v.toPrecision(6)));
+  return JSON.stringify(v);
+}

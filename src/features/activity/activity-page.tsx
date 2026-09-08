@@ -1,14 +1,6 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import {
-  Activity,
-  AlertCircle,
-  ListTodo,
-  Lock,
-  MessagesSquare,
-  ShieldAlert,
-  type LucideIcon,
-} from "lucide-react";
+import { Activity, ListTodo, Lock, MessagesSquare, ShieldAlert, type LucideIcon } from "lucide-react";
 import { useTasks, taskKeys } from "@/api/queries/tasks";
 import { useEscalations } from "@/api/queries/governance";
 import { useNotifications } from "@/api/queries/notifications";
@@ -17,9 +9,11 @@ import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
+import { Callout } from "@/components/ui/callout";
+import { SegmentedControl } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthStore } from "@/auth/store";
-import { relativeTime } from "@/lib/format";
+import { absoluteTime, relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { agentLabel, useAgentNames } from "@/lib/agent-names";
 import { buildActivityFeed, type ActivityItem } from "./activity-feed";
@@ -31,17 +25,24 @@ const KIND_ICON: Record<ActivityItem["kind"], LucideIcon> = {
 };
 
 const FILTERS = [
-  { id: "all", label: "Everything" },
-  { id: "approval", label: "Needs you" },
-  { id: "message", label: "Messages" },
-  { id: "task", label: "Tasks" },
+  { value: "all", label: "Everything" },
+  { value: "approval", label: "Needs you" },
+  { value: "message", label: "Messages" },
+  { value: "task", label: "Tasks" },
 ] as const;
+type Filter = (typeof FILTERS)[number]["value"];
 
 function Row({ item, agent }: { item: ActivityItem; agent: string | null }) {
   const Icon = KIND_ICON[item.kind];
   const body = (
-    <div className="flex items-start gap-3 rounded-md px-2 py-2.5 transition-colors hover:bg-muted/50">
+    <div
+      className={cn(
+        "flex items-start gap-3 px-3 py-2.5 transition-colors duration-100",
+        item.to && "hover:bg-muted/50",
+      )}
+    >
       <Icon
+        aria-hidden
         className={cn(
           "mt-0.5 size-4 shrink-0",
           item.kind === "approval" ? "text-warning" : "text-muted-foreground",
@@ -58,14 +59,20 @@ function Row({ item, agent }: { item: ActivityItem; agent: string | null }) {
         )}
       </div>
       {item.status && <StatusBadge status={item.status} />}
-      <span className="shrink-0 text-xs text-muted-foreground">{relativeTime(item.at)}</span>
+      <time
+        dateTime={item.at}
+        title={absoluteTime(item.at)}
+        className="tnum shrink-0 text-xs text-muted-foreground"
+      >
+        {relativeTime(item.at)}
+      </time>
     </div>
   );
   if (!item.to) return body;
   // Section routes are registered dynamically from NAV, so the router's static
   // type union doesn't know them — same string-widening as the nav links.
   return (
-    <Link to={item.to as string} params={item.params}>
+    <Link to={item.to as string} params={item.params} className="block focus-visible:outline-none focus-visible:bg-muted/60">
       {body}
     </Link>
   );
@@ -74,7 +81,7 @@ function Row({ item, agent }: { item: ActivityItem; agent: string | null }) {
 export function ActivityPage() {
   const can = useAuthStore((s) => s.can);
   const resolveAgent = useAgentNames();
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
+  const [filter, setFilter] = useState<Filter>("all");
   // Each source is scope-gated on its own so a partial key still gets a feed.
   // Tasks are not gated here: the route itself is registered behind `tasks:r`
   // (router.tsx + nav.ts), so this page cannot mount without it.
@@ -97,6 +104,12 @@ export function ActivityPage() {
     notifications.data ?? [],
   );
   const shown = filter === "all" ? feed : feed.filter((f) => f.kind === filter);
+  const counts = {
+    all: feed.length,
+    approval: feed.filter((f) => f.kind === "approval").length,
+    message: feed.filter((f) => f.kind === "message").length,
+    task: feed.filter((f) => f.kind === "task").length,
+  };
   // A missing scope must read as "you can't see this", not "nothing happened":
   // the tasks 403 used to be swallowed and rendered as the empty state.
   const hidden = [!canEscalations && "approvals", !canNotifications && "messages"].filter(
@@ -120,36 +133,34 @@ export function ActivityPage() {
     <div>
       <PageHeader
         title="Activity"
-        description="Everything your assistants did, and anything waiting on you."
+        description="Everything your agents did recently, and anything that is waiting on you."
+        actions={
+          <SegmentedControl
+            aria-label="Filter activity"
+            options={FILTERS.map((f) => ({ ...f, count: counts[f.value] }))}
+            value={filter}
+            onChange={setFilter}
+          />
+        }
       />
-      <div className="mb-3 flex flex-wrap gap-1.5">
-        {FILTERS.map((f) => (
-          <Button
-            key={f.id}
-            size="sm"
-            variant={filter === f.id ? "default" : "outline"}
-            onClick={() => setFilter(f.id)}
-          >
-            {f.label}
-          </Button>
-        ))}
-      </div>
       {failed.length > 0 && (
-        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          <AlertCircle className="size-4 shrink-0" />
-          <span className="min-w-0 flex-1">
-            Couldn’t load {failed.join(", ")}. Anything waiting on you may be missing from this
-            list.
-          </span>
-          <Button size="sm" variant="outline" onClick={retry}>
-            Retry
-          </Button>
-        </div>
+        <Callout
+          tone="danger"
+          role="alert"
+          className="mb-4"
+          actions={
+            <Button size="sm" variant="outline" onClick={retry}>
+              Retry
+            </Button>
+          }
+        >
+          Couldn’t load {failed.join(", ")}. Anything waiting on you may be missing from this list.
+        </Callout>
       )}
       {loading ? (
-        <div className="space-y-2">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-12 w-full" />
+        <div className="space-y-2" aria-busy="true" aria-label="Loading activity">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-11 w-full" />
           ))}
         </div>
       ) : shown.length === 0 && hidden.length > 0 ? (
@@ -161,11 +172,15 @@ export function ActivityPage() {
       ) : shown.length === 0 && failed.length === 0 ? (
         <EmptyState
           icon={Activity}
-          title="Nothing here yet"
-          description="Chat with an assistant and its work will show up here."
+          title={filter === "all" ? "Nothing here yet" : "Nothing in this view"}
+          description={
+            filter === "all"
+              ? "Chat with an agent and its work will show up here."
+              : "Switch the filter to see the rest of the feed."
+          }
         />
       ) : (
-        <div className="divide-y divide-border pb-10">
+        <div className="divide-y divide-border rounded-lg border border-border bg-card">
           {shown.map((item) => (
             <Row
               key={item.key}

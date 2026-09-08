@@ -42,6 +42,7 @@ import { absoluteTime, relativeTime } from "@/lib/format";
 import { durationBetween, formatDuration } from "@/lib/task-duration";
 import { ApiError } from "@/api/client";
 import type { ScheduleSummary, PipelineSummary } from "@/api/models";
+import { Callout } from "@/components/ui/callout";
 
 const EMPTY_SCHEDULE = {
   name: "",
@@ -410,12 +411,12 @@ function RunSnapshotView({ snap }: { snap: Record<string, unknown> }) {
         {took && <span>{run.completed_at ? "took" : "running for"} {took}</span>}
       </div>
       {run.error && (
-        <p className="whitespace-pre-wrap break-words rounded-md border border-destructive/40 p-2 font-mono text-xs text-destructive">
-          {run.error}
-        </p>
+        <Callout tone="danger" role="alert">
+          <span className="whitespace-pre-wrap break-words font-mono text-xs">{run.error}</span>
+        </Callout>
       )}
       {steps.length === 0 ? (
-        <p className="text-muted-foreground">No steps recorded yet.</p>
+        <p className="text-muted-foreground">No steps have run yet.</p>
       ) : (
         <ol className="divide-y divide-border rounded-md border border-border">
           {steps.map((s) => (
@@ -455,7 +456,7 @@ function RunSnapshotView({ snap }: { snap: Record<string, unknown> }) {
         <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
           Raw JSON
         </summary>
-        <pre className="mt-2 max-h-[40vh] overflow-auto rounded-md bg-muted p-3 text-xs">
+        <pre className="mt-2 max-h-[40vh] overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
           {JSON.stringify(snap, null, 2)}
         </pre>
       </details>
@@ -583,7 +584,7 @@ export function PipelinesPage() {
     <div>
       <PageHeader
         title="Pipelines"
-        description="Multi-step agent pipelines."
+        description="Multi-step workflows that chain agents and tools. Build one visually or import YAML."
         actions={
           <>
             <ImportPipelineDialog />

@@ -3,44 +3,48 @@ import { cn } from "@/lib/utils";
 type Tone = "success" | "warning" | "danger" | "muted" | "info";
 
 const TONE_CLASS: Record<Tone, string> = {
-  success: "bg-success/15 text-success",
-  warning: "bg-warning/15 text-warning",
-  danger: "bg-destructive/15 text-destructive",
-  info: "bg-primary/15 text-primary",
+  success: "bg-success/12 text-success",
+  warning: "bg-warning/12 text-warning",
+  danger: "bg-destructive/12 text-destructive",
+  info: "bg-info/12 text-info",
   muted: "bg-muted text-muted-foreground",
 };
+
+/** Statuses that represent live, in-flight work get a gently pulsing dot. */
+const LIVE = new Set(["running", "in_progress", "streaming", "connecting", "queued", "pending"]);
 
 /** Map common status strings to a tone. Unknown values render muted. */
 function toneFor(status: string): Tone {
   const s = status.toLowerCase();
-  if (["online", "active", "running", "complete", "ok", "healthy", "connected"].includes(s)) {
+  // In-flight first: "running" is work happening, not a success.
+  if (["running", "in_progress", "streaming", "connecting"].includes(s)) return "info";
+  if (["online", "active", "complete", "completed", "ok", "healthy", "connected", "enabled", "resolved", "pass", "passed", "success", "succeeded"].includes(s)) {
     return "success";
   }
-  if (["pending", "paused", "degraded", "lagged", "warning", "queued"].includes(s)) {
+  if (["pending", "paused", "degraded", "lagged", "warning", "queued", "warn", "expiring"].includes(s)) {
     return "warning";
   }
-  if (["offline", "error", "failed", "blocked", "stopped", "denied"].includes(s)) {
+  if (["offline", "error", "failed", "blocked", "stopped", "denied", "disabled", "cancelled", "canceled", "fail", "critical"].includes(s)) {
     return "danger";
   }
-  if (["running", "in_progress", "streaming"].includes(s)) return "info";
   return "muted";
 }
 
-/** Statuses that represent live, in-flight work get a gently pulsing dot. */
-const LIVE_STATUSES = new Set(["running", "in_progress", "streaming", "connecting", "queued"]);
-
 export function StatusBadge({ status, className }: { status: string; className?: string }) {
-  const live = LIVE_STATUSES.has(status.toLowerCase());
+  const live = LIVE.has(status.toLowerCase());
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium capitalize",
+        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-1.5 py-px text-xs font-medium capitalize leading-4",
         TONE_CLASS[toneFor(status)],
         className,
       )}
     >
-      <span className={cn("size-1.5 rounded-full bg-current", live && "animate-pulse")} />
-      {status}
+      <span
+        aria-hidden
+        className={cn("size-1.5 shrink-0 rounded-full bg-current", live && "animate-pulse")}
+      />
+      {status.replace(/_/g, " ")}
     </span>
   );
 }

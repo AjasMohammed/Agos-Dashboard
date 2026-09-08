@@ -17,5 +17,6 @@ export function durationBetween(
 ): string | null {
   if (!start || !end) return null;
   const ms = new Date(end).getTime() - new Date(start).getTime();
-  return Number.isNaN(ms) ? null : formatDuration(ms);
+  // Negative = clock skew; better no badge than "took —".
+  return Number.isNaN(ms) || ms < 0 ? null : formatDuration(ms);
 }

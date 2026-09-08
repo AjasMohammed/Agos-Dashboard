@@ -5,12 +5,14 @@ import type {
   CheckpointSummary,
   RunTaskRequest,
   TaskDetail,
+  TaskStatus,
   TaskSummary,
   TaskTrace,
 } from "../models";
 
 export interface TaskFilter {
-  status?: string;
+  /** Generated from the API enum — see `TaskStatus` in models.ts. */
+  status?: TaskStatus;
   agent_name?: string;
   limit?: number;
   offset?: number;

@@ -7,10 +7,7 @@ import { router } from "@/app/router";
 import { queryClient } from "@/lib/query";
 import { hydrateSession } from "@/auth/actions";
 import { initRealtime } from "@/realtime/connection";
-import "@fontsource/fira-sans/400.css";
-import "@fontsource/fira-sans/500.css";
-import "@fontsource/fira-sans/600.css";
-import "@fontsource/fira-sans/700.css";
+import "@fontsource-variable/inter/index.css";
 import "@fontsource-variable/fira-code/index.css";
 import "./index.css";
 

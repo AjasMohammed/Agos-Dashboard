@@ -39,11 +39,11 @@ describe("pendingHumanInput", () => {
   it("matches only running calls by kernel task id", () => {
     const stream = {
       user: "",
-      assistant: "",
-      tools: [
-        { name: "shell-exec", taskId: "t1" },
-        { name: "web-search", taskId: "t0", success: true },
-        { name: "gateway-call" },
+      parts: [
+        { kind: "tool" as const, name: "shell-exec", taskId: "t1" },
+        { kind: "tool" as const, name: "web-search", taskId: "t0", success: true },
+        { kind: "text" as const, text: "some prose between the calls" },
+        { kind: "tool" as const, name: "gateway-call" },
       ],
     };
     const out = pendingHumanInput(
@@ -62,10 +62,9 @@ describe("pendingHumanInput", () => {
     // grant a tool the user never reviewed.
     const stream = {
       user: "",
-      assistant: "",
-      tools: [
-        { name: "shell-exec", taskId: "t1" },
-        { name: "file-writer", taskId: "t1" },
+      parts: [
+        { kind: "tool" as const, name: "shell-exec", taskId: "t1" },
+        { kind: "tool" as const, name: "file-writer", taskId: "t1" },
       ],
     };
     const out = pendingHumanInput(stream, [esc({ id: 1 })], []);
@@ -74,7 +73,7 @@ describe("pendingHumanInput", () => {
   });
 
   it("is empty with no running calls", () => {
-    const out = pendingHumanInput({ user: "", assistant: "", tools: [] }, [esc({})], [note({})]);
+    const out = pendingHumanInput({ user: "", parts: [] }, [esc({})], [note({})]);
     expect(out.approvals).toEqual([]);
     expect(out.questions).toEqual([]);
   });

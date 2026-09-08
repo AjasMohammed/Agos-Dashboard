@@ -103,6 +103,7 @@ export const SECTION_PAGES: Record<string, FC> = {
   "/notifications": govern("NotificationsPage"),
   "/prefs": govern("PreferencesPage"),
   "/roles": govern("RolesPage"),
+  "/workspace-grants": govern("FolderAccessPage"),
   "/audit": govern("AuditPage"),
   "/plugins": integrate("PluginsPage"),
   "/channels": integrate("ChannelsPage"),
