@@ -35,6 +35,34 @@ export function parsePermission(s: string): { resource: string; bits: string } |
   return { resource: s.slice(0, i), bits: sortBits(bits) };
 }
 
+/**
+ * MCP access is granted per server (`mcp:<server>/:x`) from the agent's
+ * "MCP servers" card, so these stay out of the generic permission UI.
+ */
+export const isMcpResource = (resource: string) => resource.startsWith("mcp:");
+
+/**
+ * The granted permission that opens `serverPermission`, if any. The kernel
+ * prefix-matches resources, so a broad grant (`mcp:x`, `*:x`) covers a server
+ * without the exact `mcp:<server>/:x` entry being present.
+ */
+export function coveringGrant(granted: string[], serverPermission: string): string | undefined {
+  const want = parsePermission(serverPermission);
+  if (!want) return undefined;
+  // The exact server grant wins over a broad one, so it stays revocable.
+  if (granted.includes(serverPermission)) return serverPermission;
+  return granted.find((g) => {
+    const have = parsePermission(g);
+    if (!have || !have.bits.includes("x")) return false;
+    const h = have.resource;
+    if (h === "*") return true;
+    if (!want.resource.startsWith(h)) return false;
+    // Kernel boundary rule: a path-style grant not ending in `/` only covers
+    // whole segments (`mcp:a/b` does not open `mcp:a/bc/`).
+    return !h.includes("/") || h.endsWith("/") || want.resource[h.length] === "/";
+  });
+}
+
 export interface CatalogEntry {
   resource: string;
   /** Union of the bits every source asks for on this resource. */
@@ -64,7 +92,7 @@ export function permissionCatalog(tools: ToolSummary[], roles: Role[]): CatalogE
   };
   const add = (perm: string, from: "tools" | "roles", name: string) => {
     const parsed = parsePermission(perm);
-    if (!parsed) return;
+    if (!parsed || isMcpResource(parsed.resource)) return;
     const entry = entryFor(parsed.resource);
     entry.bits = sortBits(entry.bits + parsed.bits);
     if (!entry[from].includes(name)) entry[from].push(name);
@@ -97,11 +125,7 @@ export function isGranted(granted: Map<string, string>, resource: string, bits: 
 }
 
 /** The bits of `resource:bits` the agent does NOT hold yet. */
-export function missingBits(
-  granted: Map<string, string>,
-  resource: string,
-  bits: string,
-): string {
+export function missingBits(granted: Map<string, string>, resource: string, bits: string): string {
   const held = granted.get(resource) ?? "";
   return [...bits].filter((c) => !held.includes(c)).join("");
 }
@@ -137,6 +161,8 @@ const RESOURCE_HINTS: Record<string, string> = {
   "fs.artifacts": "Write files into the artifact store.",
   "fs.system_logs": "Read the host's system logs.",
   "fs.user_data": "Read and write files in the user-data namespace.",
+  "fs.workspace":
+    "Read and write files in operator-granted workspace folders (Folder Access). Required in addition to the folder grant itself.",
   "hardware.audio.capture": "Record from microphones.",
   "hardware.audio.list": "List audio input and output devices.",
   "hardware.audio.playback": "Play sound through speakers.",
@@ -161,6 +187,10 @@ const RESOURCE_HINTS: Record<string, string> = {
   "hardware.usb-storage": "Mount and use USB storage devices.",
   "hardware.webcam.capture": "Capture images and video from cameras.",
   "hardware.webcam.list": "List attached cameras.",
+  "hardware.wifi.connection": "Connect to and disconnect Wi-Fi networks.",
+  "hardware.wifi.list": "List saved and visible Wi-Fi networks.",
+  "hardware.wifi.radio": "Turn the Wi-Fi radio on or off.",
+  "hardware.wifi.scan": "Scan for nearby Wi-Fi networks.",
   "memory.blocks": "Read and edit the always-in-context memory blocks.",
   "memory.context": "Read and update the agent's working context memory.",
   "memory.episodic": "Read and write its record of what happened.",
@@ -183,7 +213,7 @@ const RESOURCE_HINTS: Record<string, string> = {
   "schedule.job": "Create, list and cancel scheduled jobs.",
   "schedule.self": "Read its own schedules and their run history.",
   "schedule.timer": "Set, list and cancel one-off timers.",
-  "scratchpad": "Read and write its scratchpad notes and links.",
+  scratchpad: "Read and write its scratchpad notes and links.",
   "storage.zone.create": "Create storage zones.",
   "storage.zone.list": "List storage zones.",
   "storage.zone.revoke": "Revoke access to a storage zone.",
@@ -198,28 +228,28 @@ const RESOURCE_HINTS: Record<string, string> = {
 
 /** Fallback by first dot-segment, for a resource typed by hand (`fs:/data/`). */
 const FAMILY_HINTS: Record<string, string> = {
-  "a2a": "Cross-instance agent delegation.",
-  "agent": "Acting on other agents.",
-  "build": "Running project build tooling.",
-  "channel": "Posting into channels.",
-  "chat": "Chat history and conversations.",
-  "container": "Managing containers.",
-  "env": "Managing sandboxed dev environments.",
-  "escalation": "Approval requests it raised.",
-  "events": "The kernel event stream.",
-  "fs": "Files under this path or namespace.",
-  "hardware": "Physical devices attached to the host.",
-  "memory": "The agent's own memory.",
-  "net": "Network access.",
-  "network": "Network access.",
-  "proc": "Processes the agent started.",
-  "process": "Host processes.",
-  "schedule": "Scheduled work and timers.",
-  "scratchpad": "The agent's scratchpad notes.",
-  "storage": "Storage zones.",
-  "system": "Host system information.",
-  "task": "Tasks and their status.",
-  "user": "Talking to you directly.",
+  a2a: "Cross-instance agent delegation.",
+  agent: "Acting on other agents.",
+  build: "Running project build tooling.",
+  channel: "Posting into channels.",
+  chat: "Chat history and conversations.",
+  container: "Managing containers.",
+  env: "Managing sandboxed dev environments.",
+  escalation: "Approval requests it raised.",
+  events: "The kernel event stream.",
+  fs: "Files under this path or namespace.",
+  hardware: "Physical devices attached to the host.",
+  memory: "The agent's own memory.",
+  net: "Network access.",
+  network: "Network access.",
+  proc: "Processes the agent started.",
+  process: "Host processes.",
+  schedule: "Scheduled work and timers.",
+  scratchpad: "The agent's scratchpad notes.",
+  storage: "Storage zones.",
+  system: "Host system information.",
+  task: "Tasks and their status.",
+  user: "Talking to you directly.",
 };
 
 /** One line explaining what granting `resource` allows. */
@@ -266,7 +296,9 @@ export function groupOf(resource: string): string {
 }
 
 /** Catalog entries bucketed by `groupOf`, groups and rows alphabetical. */
-export function groupCatalog(entries: CatalogEntry[]): { group: string; entries: CatalogEntry[] }[] {
+export function groupCatalog(
+  entries: CatalogEntry[],
+): { group: string; entries: CatalogEntry[] }[] {
   const groups = new Map<string, CatalogEntry[]>();
   for (const e of entries) {
     const g = groupOf(e.resource);

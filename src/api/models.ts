@@ -132,6 +132,7 @@ export type PipelineSummary = S["ApiPipelineSummary"];
 
 // Governance
 export type Escalation = S["ApiEscalation"];
+export type ResolveEscalationResponse = S["ResolveEscalationResponse"];
 export type PrefProposal = S["ApiPrefProposal"];
 export type ProposalStats = S["ApiProposalStats"];
 export type Role = S["ApiRole"];

@@ -81,6 +81,7 @@ import type {
   WorkspaceGrant,
   GrantWorkspaceBody,
 } from "@/api/models";
+import { canRemember, escOptions, matchOption } from "./escalation-options";
 import { Stat, StatGrid } from "@/components/ui/stat";
 import { Callout } from "@/components/ui/callout";
 import { SegmentedControl } from "@/components/ui/segmented";
@@ -107,20 +108,6 @@ const URGENCY_ORDER = ["critical", "high", "normal", "low"];
 const urgencyRank = (u: string) => {
   const i = URGENCY_ORDER.indexOf(u.toLowerCase());
   return i === -1 ? URGENCY_ORDER.length : i;
-};
-
-const escOptions = (e: Escalation) => e.options ?? ["approve", "deny"];
-
-/**
- * The escalation's OWN spelling of `decision`, or `undefined` when it doesn't
- * offer it. Matching is case/space-insensitive — an agent that emits
- * `["Approve", "Deny"]` used to be unresolvable in bulk (every row landed in
- * `skipped`) while its per-row buttons worked — but the original string is what
- * comes back, because the kernel matches the option text it handed out.
- */
-export const matchOption = (e: Escalation, decision: string): string | undefined => {
-  const want = decision.trim().toLowerCase();
-  return escOptions(e).find((o) => o.trim().toLowerCase() === want);
 };
 
 // `Escalation.options` is a free-form `Vec<String>` written by whoever raised the
@@ -179,6 +166,9 @@ export function bulkEffectCopy(decision: string, count: number): string {
 export function EscalationsPage() {
   const query = useEscalations();
   const canRead = useAuthStore((s) => s.can("escalations:r"));
+  // `remember: true` also needs `approvals:w`, and the kernel checks it before
+  // resolving — without it the click 403s and the row stays pending.
+  const canGrantApprovals = useAuthStore((s) => s.can("approvals:w"));
   // The kernel pushes escalation.created/resolved/expired on this channel, so a
   // new approval lands as fast as the operator's push notification did. The 5s
   // poll in `useEscalations` stays as the fallback for a dropped socket.
@@ -215,12 +205,16 @@ export function EscalationsPage() {
     setActing((prev) => withIds(prev, ids, on));
   const deselect = (ids: string[]) => setSelected((prev) => withIds(prev, ids, false));
 
-  async function decide(e: Escalation, decision: string) {
+  async function decide(e: Escalation, decision: string, remember = false) {
     const id = String(e.id);
     setRowActing([id], true);
     try {
-      await resolve.mutateAsync({ id, decision });
-      toast.success(`Resolved: ${decision}`);
+      const res = await resolve.mutateAsync({ id, decision, remember });
+      toast.success(`Resolved: ${decision}`, {
+        // What the kernel actually remembered (or why it didn't) — never the
+        // panel's guess at the scope.
+        description: remember ? res?.remember_note : undefined,
+      });
       // Only drop it on success — a rejected mutation must stay in the batch
       // the operator is about to retry.
       deselect([id]);
@@ -379,6 +373,16 @@ export function EscalationsPage() {
                                 {optionLabel(opt)}
                               </Button>
                             ))}
+                            {canGrantApprovals && canRemember(e) && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                disabled={acting.has(String(e.id))}
+                                onClick={() => decide(e, matchOption(e, "approve")!, true)}
+                              >
+                                Approve &amp; always allow
+                              </Button>
+                            )}
                           </div>
                         </CardContent>
                       </Card>
@@ -1886,3 +1890,7 @@ export function modeLabel(mode: string): string {
   ].filter(Boolean);
   return parts.length ? parts.join(" + ") : "no access";
 }
+
+// Re-exported: these live in `./escalation-options` so the chat approval card
+// shares them, but they are part of this page's tested surface.
+export { canRemember, matchOption };

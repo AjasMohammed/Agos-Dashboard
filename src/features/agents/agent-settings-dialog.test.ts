@@ -5,6 +5,7 @@ const loaded: AgentSettingsValues = {
   description: "does the thing",
   thinking_level: "high",
   system_prompt: "You are a careful assistant.",
+  avatar: "",
 };
 
 describe("changedSettings", () => {
@@ -32,6 +33,19 @@ describe("changedSettings", () => {
     const body = changedSettings("scout", blank, { ...blank, thinking_level: "off" });
     expect(body).toEqual({ agent_name: "scout", thinking_level: "off" });
     expect("system_prompt" in body).toBe(false);
+  });
+
+  it("sends a new picture, and an empty string to remove one", () => {
+    const pic = "data:image/webp;base64,UklGRg==";
+    expect(changedSettings("scout", loaded, { ...loaded, avatar: pic })).toEqual({
+      agent_name: "scout",
+      avatar: pic,
+    });
+    const withPic = { ...loaded, avatar: pic };
+    expect(changedSettings("scout", withPic, { ...withPic, avatar: "" })).toEqual({
+      agent_name: "scout",
+      avatar: "",
+    });
   });
 
   it("compares the trimmed description so whitespace alone is not a change", () => {

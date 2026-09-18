@@ -43,6 +43,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agent-chats/{id}/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/agent-chats/{id}/continue` — Resume a finished conversation in
+         *     place for more turns, picking up after its last speaker.
+         */
+        post: operations["agent_chats_continue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-chats/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/agent-chats/{id}/messages` — Post an operator message. A running
+         *     conversation answers it on its next turn; a finished one resumes for one round.
+         */
+        post: operations["agent_chats_post_message"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agent-chats/{id}/stop": {
         parameters: {
             query?: never;
@@ -2510,6 +2550,11 @@ export interface components {
             status: string;
         };
         ApiAgentSummary: {
+            /**
+             * @description Profile picture as a `data:image/...;base64,` URL, usable directly as an
+             *     `<img src>`. Absent when none is set.
+             */
+            avatar?: string | null;
             /** Format: date-time */
             connected_at: string;
             id: string;
@@ -2736,7 +2781,7 @@ export interface components {
          *     Maps from `ConvoStore::get_turns()` → `ConvoTurn`.
          */
         ApiConvoTurn: {
-            /** @description Agent that produced this turn. */
+            /** @description Agent that produced this turn, or `@user` for an operator message. */
             agent_name: string;
             /** @description Turn content. */
             content: string;
@@ -2893,6 +2938,11 @@ export interface components {
             note?: string | null;
             /** @description OAuth connector id backing this server, if any. */
             oauth_connector_id?: string | null;
+            /**
+             * @description Permission that grants an agent every tool of this server
+             *     (`mcp:<server>/:x`); pass it to the agent grant/revoke endpoints.
+             */
+            permission: string;
             /**
              * @description Live supervisor state (`Connected`, `Connecting`, `Backoff`, `Stopped`, ...).
              *     `null` when only a persisted attachment exists with no live process.
@@ -3222,7 +3272,8 @@ export interface components {
             permissions?: string[];
             /**
              * @description Approval risk class (`readonly_scoped`, `readonly_external`,
-             *     `write_scoped`, `exec_capable`, `control_plane`, `interactive`).
+             *     `write_agent_state`, `write_scoped`, `exec_capable`, `control_plane`,
+             *     `interactive`).
              */
             risk_class?: string | null;
             status: string;
@@ -3383,6 +3434,14 @@ export interface components {
             reply_topic?: string | null;
             server_url?: string | null;
             webhook_url?: string | null;
+        };
+        /** @description Request body for continuing a finished conversation in place. */
+        ContinueConvoRequest: {
+            /**
+             * Format: int32
+             * @description Additional agent turns to run (clamped to 1..=50; default 8).
+             */
+            turns?: number | null;
         };
         /** @description A per-agent daily budget snapshot. */
         CostBudget: {
@@ -3635,6 +3694,11 @@ export interface components {
          */
         Envelope_ApiAgentSummary: {
             data: {
+                /**
+                 * @description Profile picture as a `data:image/...;base64,` URL, usable directly as an
+                 *     `<img src>`. Absent when none is set.
+                 */
+                avatar?: string | null;
                 /** Format: date-time */
                 connected_at: string;
                 id: string;
@@ -4201,7 +4265,8 @@ export interface components {
                 permissions?: string[];
                 /**
                  * @description Approval risk class (`readonly_scoped`, `readonly_external`,
-                 *     `write_scoped`, `exec_capable`, `control_plane`, `interactive`).
+                 *     `write_agent_state`, `write_scoped`, `exec_capable`, `control_plane`,
+                 *     `interactive`).
                  */
                 risk_class?: string | null;
                 status: string;
@@ -4500,6 +4565,16 @@ export interface components {
             data: {
                 /** Format: int64 */
                 escalation_id: number;
+                /**
+                 * Format: int64
+                 * @description Id of the standing grant minted by `remember: true`, when one was.
+                 */
+                policy_id?: number | null;
+                /**
+                 * @description Human-readable outcome of `remember: true` — what was remembered, or
+                 *     why nothing was (already remembered, exec tool with no path, …).
+                 */
+                remember_note?: string | null;
                 status: string;
                 task_id: string;
                 task_resumed: boolean;
@@ -4574,6 +4649,11 @@ export interface components {
          */
         Envelope_Vec_ApiAgentSummary: {
             data: {
+                /**
+                 * @description Profile picture as a `data:image/...;base64,` URL, usable directly as an
+                 *     `<img src>`. Absent when none is set.
+                 */
+                avatar?: string | null;
                 /** Format: date-time */
                 connected_at: string;
                 id: string;
@@ -4854,6 +4934,11 @@ export interface components {
                 /** @description OAuth connector id backing this server, if any. */
                 oauth_connector_id?: string | null;
                 /**
+                 * @description Permission that grants an agent every tool of this server
+                 *     (`mcp:<server>/:x`); pass it to the agent grant/revoke endpoints.
+                 */
+                permission: string;
+                /**
                  * @description Live supervisor state (`Connected`, `Connecting`, `Backoff`, `Stopped`, ...).
                  *     `null` when only a persisted attachment exists with no live process.
                  */
@@ -5092,7 +5177,8 @@ export interface components {
                 permissions?: string[];
                 /**
                  * @description Approval risk class (`readonly_scoped`, `readonly_external`,
-                 *     `write_scoped`, `exec_capable`, `control_plane`, `interactive`).
+                 *     `write_agent_state`, `write_scoped`, `exec_capable`, `control_plane`,
+                 *     `interactive`).
                  */
                 risk_class?: string | null;
                 status: string;
@@ -5254,6 +5340,14 @@ export interface components {
             data: {
                 /** @description Truncated body text for list views. */
                 body?: string;
+                /**
+                 * Format: int64
+                 * @description Numeric escalation id when this notification is an approval prompt
+                 *     raised by the escalation sink. Lets a client link the bell entry to the
+                 *     escalation queue entry it must act on — without it the row carries no
+                 *     machine-readable pointer back to the thing that is blocking the task.
+                 */
+                escalation_id?: number | null;
                 /** @description Source label (e.g. "Kernel", agent name). */
                 from?: string;
                 id: string;
@@ -5582,6 +5676,14 @@ export interface components {
         NotificationSummary: {
             /** @description Truncated body text for list views. */
             body?: string;
+            /**
+             * Format: int64
+             * @description Numeric escalation id when this notification is an approval prompt
+             *     raised by the escalation sink. Lets a client link the bell entry to the
+             *     escalation queue entry it must act on — without it the row carries no
+             *     machine-readable pointer back to the thing that is blocking the task.
+             */
+            escalation_id?: number | null;
             /** @description Source label (e.g. "Kernel", agent name). */
             from?: string;
             id: string;
@@ -5659,6 +5761,11 @@ export interface components {
             name: string;
             yaml: string;
         };
+        /** @description Request body for posting an operator message into a conversation. */
+        PostConvoMessageRequest: {
+            /** @description Message text (max 4000 chars). */
+            content: string;
+        };
         /** @description Query filter for `GET /api/v1/prefs/proposals`. */
         PrefProposalQuery: {
             /**
@@ -5684,11 +5791,30 @@ export interface components {
             decision: string;
             /** @description Optional free-form note recorded alongside the decision. */
             note?: string | null;
+            /**
+             * @description On approve, also mint a standing grant for the escalated tool
+             *     (agent-scoped, 7 days; parent-directory glob when the call had a
+             *     `path`) so it stops re-prompting. Ignored on deny. Requires the
+             *     `approvals:w` scope in addition to `escalations:w`. Refused for
+             *     exec-capable tools with no path to scope by. Revocable via
+             *     `DELETE /api/v1/approval-policies/{id}`.
+             */
+            remember?: boolean;
         };
         /** @description Response for `POST /api/v1/escalations/{id}/resolve`. */
         ResolveEscalationResponse: {
             /** Format: int64 */
             escalation_id: number;
+            /**
+             * Format: int64
+             * @description Id of the standing grant minted by `remember: true`, when one was.
+             */
+            policy_id?: number | null;
+            /**
+             * @description Human-readable outcome of `remember: true` — what was remembered, or
+             *     why nothing was (already remembered, exec tool with no path, …).
+             */
+            remember_note?: string | null;
             status: string;
             task_id: string;
             task_resumed: boolean;
@@ -5763,6 +5889,12 @@ export interface components {
         };
         /** @description Request body for sending a user message to a session (non-streaming). */
         SendChatMessageRequest: {
+            /**
+             * @description Comma-separated upload ids attached to this message (from
+             *     `GET /api/v1/files`). Resolved into context parts — extracted text for
+             *     documents, image parts for a vision-capable agent.
+             */
+            file_ids?: string | null;
             text: string;
         };
         SetChannelAgentRequest: {
@@ -5844,10 +5976,21 @@ export interface components {
          */
         UpdateAgentSettingsRequest: {
             agent_name: string;
+            /**
+             * @description Profile picture as a `data:image/{png,jpeg,webp,gif};base64,` URL, at most
+             *     64 KB. Absent = unchanged; `""` = remove the picture.
+             */
+            avatar?: string | null;
             description?: string | null;
             /** @description `None` leaves the prompt untouched; `Some("")` clears it. */
             system_prompt?: string | null;
             thinking_level?: string | null;
+            /**
+             * @description Per-agent tool working-set size (T1 tools pre-armed by retrieval).
+             *     Absent = unchanged; `null` = revert to the kernel default; `0` = pinned
+             *     tools only (small / low-TPM models).
+             */
+            working_set_size?: number | null;
         };
         /**
          * @description Edit a connected channel in place (`PUT /channels/{id}`).
@@ -5996,6 +6139,123 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Envelope_ApiConvoDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    agent_chats_continue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation id (UUID) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContinueConvoRequest"];
+            };
+        };
+        responses: {
+            /** @description Conversation resumed (running) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiConvoSummary"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Conversation is still running */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    agent_chats_post_message: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation id (UUID) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostConvoMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Message stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ApiConvoSummary"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
             /** @description Unauthorized */
@@ -8778,8 +9038,8 @@ export interface operations {
             query: {
                 /**
                  * @description Channel to subscribe to (`tasks`, `agents`, `audit`, `schedules`,
-                 *     `system`, or `events`). Subscribing requires the matching `<channel>:r`
-                 *     scope on the API key.
+                 *     `system`, `escalations`, or `events`). Subscribing requires the matching
+                 *     `<channel>:r` scope on the API key.
                  */
                 channel: string;
             };

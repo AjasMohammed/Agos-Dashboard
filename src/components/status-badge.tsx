@@ -1,6 +1,5 @@
 import { cn } from "@/lib/utils";
-
-type Tone = "success" | "warning" | "danger" | "muted" | "info";
+import { toneFor, type Tone } from "@/lib/status-tone";
 
 const TONE_CLASS: Record<Tone, string> = {
   success: "bg-success/12 text-success",
@@ -12,23 +11,6 @@ const TONE_CLASS: Record<Tone, string> = {
 
 /** Statuses that represent live, in-flight work get a gently pulsing dot. */
 const LIVE = new Set(["running", "in_progress", "streaming", "connecting", "queued", "pending"]);
-
-/** Map common status strings to a tone. Unknown values render muted. */
-function toneFor(status: string): Tone {
-  const s = status.toLowerCase();
-  // In-flight first: "running" is work happening, not a success.
-  if (["running", "in_progress", "streaming", "connecting"].includes(s)) return "info";
-  if (["online", "active", "complete", "completed", "ok", "healthy", "connected", "enabled", "resolved", "pass", "passed", "success", "succeeded"].includes(s)) {
-    return "success";
-  }
-  if (["pending", "paused", "degraded", "lagged", "warning", "queued", "warn", "expiring"].includes(s)) {
-    return "warning";
-  }
-  if (["offline", "error", "failed", "blocked", "stopped", "denied", "disabled", "cancelled", "canceled", "fail", "critical"].includes(s)) {
-    return "danger";
-  }
-  return "muted";
-}
 
 export function StatusBadge({ status, className }: { status: string; className?: string }) {
   const live = LIVE.has(status.toLowerCase());

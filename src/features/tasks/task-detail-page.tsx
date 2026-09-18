@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, RotateCcw } from "lucide-react";
+import { ArrowLeft, Copy, RotateCcw } from "lucide-react";
+import { copyText } from "@/lib/clipboard";
 import { toast } from "sonner";
 import {
   useTask,
@@ -25,7 +26,7 @@ import { relativeTime } from "@/lib/format";
 import { taskTitle } from "@/lib/task-title";
 import { durationBetween } from "@/lib/task-duration";
 import { RunTaskDialog } from "./run-task-dialog";
-import { TaskTraceView, truncateText } from "./task-trace";
+import { TaskTraceView, ToolCall, truncateText } from "./task-trace";
 import type { TaskTrace } from "@/api/models";
 
 // API vocabulary (crates/agentos-api/src/util.rs): queued running waiting suspended complete failed cancelled
@@ -64,11 +65,33 @@ function RawTraceJson({ trace }: { trace: TaskTrace }) {
   );
 }
 
+/**
+ * The final answer is often a summary ("10 quotes shown…"); the data the agent
+ * actually gathered lives in its tool outputs. List them here, readable, so the
+ * operator doesn't have to dig through the Trace tab.
+ */
+function ToolOutputs({ trace }: { trace: TaskTrace | undefined }) {
+  const calls = trace?.iterations.flatMap((it) => it.tool_calls) ?? [];
+  if (calls.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Tool outputs ({calls.length})</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {calls.map((c, i) => (
+          <ToolCall key={i} call={c} collapsed />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function TaskDetailPage() {
   const { id } = useParams({ strict: false }) as { id: string };
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState("result");
   const query = useTask(id);
-  const trace = useTaskTrace(id, tab === "trace");
+  const trace = useTaskTrace(id, tab === "trace" || tab === "result");
   const checkpoints = useTaskCheckpoints(id, tab === "checkpoints");
   const cancel = useCancelTask();
   const resume = useResumeTask();
@@ -176,11 +199,12 @@ export function TaskDetailPage() {
 
               <Tabs value={tab} onValueChange={setTab}>
                 <TabsList>
+                  <TabsTrigger value="result">Result</TabsTrigger>
                   <TabsTrigger value="overview">Overview</TabsTrigger>
                   <TabsTrigger value="trace">Trace</TabsTrigger>
                   <TabsTrigger value="checkpoints">Checkpoints</TabsTrigger>
                 </TabsList>
-                <TabsContent value="overview" className="space-y-4">
+                <TabsContent value="result" className="space-y-4">
                   {t.error && (
                     <Card className="border-destructive/40">
                       <CardHeader>
@@ -191,16 +215,31 @@ export function TaskDetailPage() {
                       </CardContent>
                     </Card>
                   )}
-                  {t.result && (
+                  {t.result ? (
                     <Card>
-                      <CardHeader>
-                        <CardTitle>Result</CardTitle>
+                      <CardHeader className="flex-row items-center justify-between gap-2">
+                        <CardTitle>Final answer</CardTitle>
+                        <Button variant="ghost" size="sm" onClick={() => void copyText(t.result ?? "", "Result")}>
+                          <Copy />
+                          Copy
+                        </Button>
                       </CardHeader>
                       <CardContent>
                         <Markdown className="text-sm">{t.result}</Markdown>
                       </CardContent>
                     </Card>
+                  ) : (
+                    !t.error && (
+                      <p className="py-6 text-center text-sm text-muted-foreground">
+                        {RUNNING.includes(status)
+                          ? "Task is still running — its answer appears here when it finishes."
+                          : "This task finished without a final answer."}
+                      </p>
+                    )
                   )}
+                  <ToolOutputs trace={trace.data ?? undefined} />
+                </TabsContent>
+                <TabsContent value="overview" className="space-y-4">
                   <Card>
                     <CardHeader>
                       <CardTitle>Prompt</CardTitle>

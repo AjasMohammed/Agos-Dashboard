@@ -131,16 +131,32 @@ export function useRemoveAgent() {
   });
 }
 
+/**
+ * Grant permissions to a fixed agent. The kernel takes ONE `resource:BITS` per
+ * call, so a multi-select grant is N sequential POSTs (not parallel — the API
+ * throttles per IP at 2/s). Failures are collected instead of thrown so a
+ * partial grant can still report what landed; the caller inspects the result.
+ */
 export function useGrantPermission(name: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (permission: string) => {
-      unwrap(
-        await client.POST("/api/v1/agents/{name}/permissions", {
-          params: { path: { name } },
-          body: { agent_name: name, permission },
-        }),
-      );
+    mutationFn: async (permissions: string[]) => {
+      const granted: string[] = [];
+      const failed: { permission: string; error: unknown }[] = [];
+      for (const permission of permissions) {
+        try {
+          unwrap(
+            await client.POST("/api/v1/agents/{name}/permissions", {
+              params: { path: { name } },
+              body: { agent_name: name, permission },
+            }),
+          );
+          granted.push(permission);
+        } catch (error) {
+          failed.push({ permission, error });
+        }
+      }
+      return { granted, failed };
     },
     onSuccess: () => invalidateAgentProfile(qc, name),
   });

@@ -52,6 +52,7 @@ import {
   abortChatStream,
   consumeFailedChatText,
   dismissChatStream,
+  hydrateTurns,
   startChatStream,
   stopChatStream,
   streamText,
@@ -59,9 +60,9 @@ import {
   useChatStreamStore,
   type ChatStream,
   type StreamPart,
-  type ThoughtBlock,
 } from "./stream-store";
 import { useStickToBottom } from "./stick-to-bottom";
+import type { TurnLog } from "./turn-log";
 import { stripMarkdown } from "@/lib/preview-text";
 import { useAgents } from "@/api/queries/agents";
 import { useInvalidateOnEvent } from "@/realtime/cacheBridge";
@@ -71,6 +72,7 @@ import { MentionTextarea } from "@/components/mention-textarea";
 import { EmptyState } from "@/components/empty-state";
 import { Callout } from "@/components/ui/callout";
 import { EASE_OUT } from "@/components/motion";
+import { TypingDots } from "@/components/typing-dots";
 import { useIsNarrow } from "@/lib/use-is-narrow";
 import { QueryState } from "@/components/query-state";
 import { Button } from "@/components/ui/button";
@@ -82,7 +84,7 @@ import { toastError } from "@/lib/errors";
 import { prettyJson, relativeTime } from "@/lib/format";
 import { toolVerb } from "@/lib/tool-verbs";
 import { cn } from "@/lib/utils";
-import type { ChatMessage, ChatSessionSummary } from "@/api/models";
+import type { ChatMessage, ChatSessionSummary, FileMeta } from "@/api/models";
 
 /** Starters for an empty chat — each maps to a tool a default chat agent has. */
 const SUGGESTIONS = [
@@ -172,24 +174,6 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
     >
       {done ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
     </button>
-  );
-}
-
-function TypingDots() {
-  return (
-    // role="status" — an aria-label on a bare <span> has no role to hang off, so
-    // assistive tech never announced that a reply had started.
-    <span role="status" className="flex items-center gap-1.5 py-1" aria-label="Assistant is typing">
-      {[0, 1, 2].map((i) => (
-        <motion.span
-          key={i}
-          className="size-1.5 rounded-full bg-muted-foreground"
-          animate={{ opacity: [0.25, 1, 0.25], y: [0, -3, 0] }}
-          transition={{ duration: 1.1, repeat: Infinity, delay: i * 0.16, ease: "easeInOut" }}
-        />
-      ))}
-      <span className="ml-1 text-xs text-muted-foreground">Thinking…</span>
-    </span>
   );
 }
 
@@ -437,34 +421,39 @@ function ThinkingStep({
  * transcript carries no ordering between them — so it sits with the tool cards
  * that already group above the answer.
  */
-function HandedOverThoughts({ thoughts }: { thoughts?: ThoughtBlock[] }) {
-  if (!thoughts?.length) return null;
-  return (
-    <div className="space-y-1">
-      {thoughts.map((t, i) => (
-        <ThinkingStep key={i} iteration={t.iteration} text={t.text} active={false} />
-      ))}
-    </div>
-  );
-}
-
 /**
- * The turn's steps in the order the server emitted them: think, call, write,
- * call again, write again. They used to be regrouped as "every tool first,
- * then all the text", which is not the sequence that happened.
+ * A turn's steps in the order the server emitted them: think, call, write, call
+ * again, write again. They used to be regrouped as "every tool first, then all
+ * the text", which is not the sequence that happened — and a turn read back
+ * from the transcript regrouped itself the same way (reasoning stacked on top,
+ * tool calls as sibling rows, the reply in one block), so a reply stopped
+ * looking like the turn that was watched live the moment it finished.
+ *
+ * `toolRows` are that turn's persisted tool rows, matched to its tool parts in
+ * order: the stream carries only a result preview, the row carries the full
+ * payload and result, so a replayed call is still worth expanding.
  */
-function StreamParts({ stream, generating }: { stream: ChatStream; generating: boolean }) {
+function TurnParts({
+  parts,
+  generating = false,
+  toolRows,
+}: {
+  parts: StreamPart[];
+  generating?: boolean;
+  toolRows?: ChatMessage[];
+}) {
+  let nextTool = 0;
   return (
     <>
-      {stream.parts.map((part, i) => {
-        const last = i === stream.parts.length - 1;
+      {parts.map((part, i) => {
+        const last = i === parts.length - 1;
         if (part.kind === "text")
           return (
             <Markdown
               // Math off while streaming: the whole string is re-parsed per
               // chunk, and a half-written formula renders as an error.
               key={i}
-              math={false}
+              math={!generating}
               className={cn("text-[15px]", last && generating && "streaming")}
             >
               {part.text}
@@ -479,10 +468,39 @@ function StreamParts({ stream, generating }: { stream: ChatStream; generating: b
               active={last && generating}
             />
           );
-        return <LiveToolPill key={i} part={part} />;
+        const row = toolRows?.[nextTool++];
+        return row ? <ToolCallCard key={i} m={row} /> : <LiveToolPill key={i} part={part} />;
       })}
     </>
   );
+}
+
+/**
+ * Split the transcript into what to draw: the rows themselves, and the tool
+ * rows a replayed turn draws inline instead (`user → tool… → assistant` is the
+ * kernel's own write order, so a turn owns the tool rows between the previous
+ * assistant row and its own). Drawing those twice is the alternative.
+ */
+function planRows(rows: ChatMessage[], turns: TurnLog | undefined) {
+  const inline = new Map<string, ChatMessage[]>();
+  const absorbed = new Set<ChatMessage>();
+  let pending: ChatMessage[] = [];
+  for (const m of rows) {
+    if (m.role === "tool") {
+      pending.push(m);
+      continue;
+    }
+    if (m.role === "assistant") {
+      // Only as many rows as the stored turn actually replays: anything left
+      // over is a call it doesn't know about, and stays a row of its own.
+      const calls = turns?.[m.timestamp]?.filter((p) => p.kind === "tool").length ?? 0;
+      const taken = pending.slice(0, calls);
+      if (taken.length) inline.set(m.timestamp, taken);
+      taken.forEach((t) => absorbed.add(t));
+    }
+    pending = [];
+  }
+  return { inline, shown: rows.filter((m) => !absorbed.has(m)) };
 }
 
 /** What the turn cost, from the `done` frame. Absent on stopped/failed turns. */
@@ -628,6 +646,7 @@ function Composer({
   value,
   onValueChange,
   onSubmit,
+  onFilePicked,
   onStop,
   busy,
 }: {
@@ -635,6 +654,8 @@ function Composer({
   value: string;
   onValueChange: (v: string) => void;
   onSubmit: () => void;
+  /** A file chosen from the `@` menu, so its id can ride along as an attachment. */
+  onFilePicked?: (file: FileMeta) => void;
   /** Present only while a reply is streaming — swaps Send for Stop. */
   onStop?: () => void;
   busy?: boolean;
@@ -654,6 +675,7 @@ function Composer({
           value={value}
           onValueChange={onValueChange}
           placeholder="Ask anything — @ to attach a file"
+          onFilePicked={onFilePicked}
           containerClassName="flex-1"
           className="max-h-52 min-h-[24px] resize-none overflow-y-auto rounded-none border-0 bg-transparent px-0 py-1.5 text-[15px] shadow-none focus-visible:ring-0"
           rows={1}
@@ -826,11 +848,21 @@ function Conversation({
   const rename = useRenameChatSession();
   const fork = useForkChatSession();
   const [text, setText] = useState("");
+  // Files picked from the `@` menu. The mention itself resolves server-side by
+  // name, but a name can only ever yield text — an image needs its id to reach
+  // the vision path — so the id rides along as an attachment.
+  const [attached, setAttached] = useState<FileMeta[]>([]);
   // Survives the handover to the transcript, which carries no tokens/cost.
   const lastUsage = useChatStreamStore((s) => s.turnUsage[sessionId]);
   // Survives the handover for the same reason the cost does — the transcript has
   // nowhere to put it. Only the newest turn keeps it, and only until a reload.
-  const lastThoughts = useChatStreamStore((s) => s.turnThinking[sessionId]);
+  // What each finished turn looked like, per assistant row: the store files the
+  // ordered parts under the row the handover refetch brought back, and mirrors
+  // them to localStorage — so a turn still reads the way it streamed after the
+  // next send and after a reload. (See `turn-log.ts`: the transcript itself
+  // carries no reasoning and splits tool calls into rows of their own.)
+  const turnLog = useChatStreamStore((s) => s.turns[sessionId]);
+  useEffect(() => hydrateTurns(sessionId), [sessionId]);
   const failedText = useChatStreamStore((s) => s.failed[sessionId]);
   const failedAt = useChatStreamStore((s) => s.failedAt[sessionId]);
   const { viewportRef, contentRef, onScroll, showJump, scrollToBottom } = useStickToBottom();
@@ -902,8 +934,12 @@ function Conversation({
   function submit() {
     const t = text.trim();
     if (!t || generating) return;
+    // Only the files still mentioned in the text: a name typed and then deleted
+    // must not silently attach itself anyway.
+    const ids = attached.filter((f) => t.includes(`@${f.name}`)).map((f) => f.id);
     setText("");
-    startChatStream(sessionId, t);
+    setAttached([]);
+    startChatStream(sessionId, t, ids.length ? ids.join(",") : undefined);
     // "auto", not the default smooth: the scroll events an animation emits on
     // the way down unpin the viewport and flash "Jump to latest" mid-send.
     scrollToBottom("auto");
@@ -1004,6 +1040,7 @@ function Conversation({
                     ((m.role === "user" || m.role === "assistant") && m.content.trim().length > 0),
                 )
                 .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+              const plan = planRows(visible, turnLog);
               return visible.length === 0 && !streaming ? (
                 <EmptyChat
                   onPick={(t) => {
@@ -1018,7 +1055,7 @@ function Conversation({
                 // after it — handing an expanded ToolCallCard's open state to a
                 // different call. `ChatMessage` carries no id; timestamp+role is
                 // the stable pair the transcript actually has.
-                withRowKeys(visible).map(({ m, key }, i, rows) => (
+                withRowKeys(plan.shown).map(({ m, key }, i, rows) => (
                   <motion.div key={key} {...bubbleMotion}>
                     {m.role === "tool" ? (
                       <div className="pl-10">
@@ -1041,12 +1078,18 @@ function Conversation({
                           </div>
                         }
                       >
-                        {/* Same placement rule as the usage footer: the newest
-                            reply is the only row those steps belong to. */}
-                        {!streaming && i === rows.length - 1 && (
-                          <HandedOverThoughts thoughts={lastThoughts} />
+                        {/* Replayed from the turn's own parts when we have them,
+                            so it reads the way it streamed; otherwise the flat
+                            reply is all the transcript can offer (a turn from
+                            another browser, or from before this session). */}
+                        {turnLog?.[m.timestamp] ? (
+                          <TurnParts
+                            parts={turnLog[m.timestamp]}
+                            toolRows={plan.inline.get(m.timestamp)}
+                          />
+                        ) : (
+                          <Markdown className="text-[15px]">{m.content}</Markdown>
                         )}
-                        <Markdown className="text-[15px]">{m.content}</Markdown>
                       </AssistantTurn>
                     )}
                   </motion.div>
@@ -1077,7 +1120,7 @@ function Conversation({
                     }
                   >
                     {!replyEchoed && (
-                      <StreamParts stream={streaming} generating={generating} />
+                      <TurnParts parts={streaming.parts} generating={generating} />
                     )}
                     {/* Nothing has arrived yet: the request is out, the first
                         frame is not. */}
@@ -1123,6 +1166,9 @@ function Conversation({
           value={text}
           onValueChange={setText}
           onSubmit={submit}
+          onFilePicked={(f) =>
+            setAttached((cur) => (cur.some((x) => x.id === f.id) ? cur : [...cur, f]))
+          }
           onStop={generating ? () => stopChatStream(sessionId) : undefined}
         />
       </div>

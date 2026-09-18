@@ -3,11 +3,17 @@ import type { StreamHandlers } from "@/api/queries/chat";
 
 const h = vi.hoisted(() => ({
   handlers: null as StreamHandlers | null,
+  /** The `file_ids` the store forwarded for the turn under test. */
+  fileIds: undefined as string | undefined,
   /** Every queryKey passed to `invalidateQueries`, in call order. */
   invalidated: [] as (readonly unknown[])[],
   /** One deferred per invalidation, so a test can settle (or reject) the refetch. */
   settlers: [] as { resolve: () => void; reject: (e: unknown) => void }[],
+  /** The transcript the refetch would put in the cache. */
+  rows: [] as { role: string; content: string; timestamp: string }[],
 }));
+
+
 
 // Only `streamChatMessage` is faked. The REAL `chatKeys` are used on purpose:
 // mocking them hid the bug where the sessions key was a prefix of the messages
@@ -15,14 +21,21 @@ const h = vi.hoisted(() => ({
 // was awaiting and the reply blinked out for a round trip on every turn.
 vi.mock("@/api/queries/chat", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/queries/chat")>()),
-  streamChatMessage: (_id: string, _text: string, handlers: StreamHandlers) => {
+  streamChatMessage: (
+    _id: string,
+    _text: string,
+    fileIds: string | undefined,
+    handlers: StreamHandlers,
+  ) => {
     h.handlers = handlers;
+    h.fileIds = fileIds;
     return Promise.resolve();
   },
 }));
 
 vi.mock("@/lib/query", () => ({
   queryClient: {
+    getQueryData: () => ({ items: h.rows }),
     invalidateQueries: ({ queryKey }: { queryKey: readonly unknown[] }) => {
       h.invalidated = [...h.invalidated, queryKey];
       return new Promise<void>((resolve, reject) => h.settlers.push({ resolve, reject }));
@@ -40,16 +53,19 @@ import {
   dismissChatStream,
   streamText,
   streamTools,
+  hydrateTurns,
 } from "./stream-store";
 
 beforeEach(() => {
   h.handlers = null;
   h.invalidated = [];
   h.settlers.length = 0;
+  h.rows = [];
+  localStorage.clear();
   useChatStreamStore.setState({
     streams: {},
     turnUsage: {},
-    turnThinking: {},
+    turns: {},
     failed: {},
     failedAt: {},
   });
@@ -287,38 +303,107 @@ describe("chat stream store", () => {
     ]);
   });
 
-  it("keeps the turn's reasoning after the transcript takes over", async () => {
+  /** The refetch lands: the kernel's persisted rows, newest reply last. */
+  function transcript(...replies: string[]) {
+    h.rows = replies.flatMap((content, i) => [
+      { role: "user", content: `q${i}`, timestamp: `2026-09-10T10:0${i}:00Z` },
+      { role: "assistant", content, timestamp: `2026-09-10T10:0${i}:30Z` },
+    ]);
+  }
+
+  it("files the turn's parts under the row the transcript brought back", async () => {
     // `ApiChatMessage` has no field for reasoning, so without this the thinking
     // blocks vanish the instant the refetch lands — which is exactly when the
     // reader goes back to check the model's working.
+    transcript("first reply");
     startChatStream("s1", "hi");
     h.handlers?.onThinking?.(1, "check the disk first");
     h.handlers?.onChunk("87% used.");
     h.handlers?.onThinking?.(2);
     h.handlers?.onDone();
+    transcript("first reply", "87% used.");
     h.settlers.forEach((s) => s.resolve());
     await vi.waitFor(() => expect(stream("s1")).toBeUndefined());
     // The bare pass-2 marker is dropped: it only ever meant "a pass started".
-    expect(useChatStreamStore.getState().turnThinking.s1).toEqual([
-      { iteration: 1, text: "check the disk first" },
-    ]);
+    expect(useChatStreamStore.getState().turns.s1).toEqual({
+      "2026-09-10T10:01:30Z": [
+        { kind: "thinking", iteration: 1, text: "check the disk first" },
+        { kind: "text", text: "87% used." },
+        { kind: "thinking", iteration: 2 },
+      ],
+    });
   });
 
-  it("keeps no reasoning for a turn that produced none", () => {
+  it("keeps an older turn's parts when the next turn starts", async () => {
+    // The bug this whole log exists for: one slot per session meant turn 1's
+    // reasoning was gone the moment turn 2 was sent.
+    transcript("first reply");
+    startChatStream("s1", "hi");
+    h.handlers?.onThinking?.(1, "first turn thoughts");
+    h.handlers?.onDone();
+    transcript("first reply", "second reply");
+    h.settlers.forEach((s) => s.resolve());
+    await vi.waitFor(() => expect(stream("s1")).toBeUndefined());
+    startChatStream("s1", "again");
+    expect(useChatStreamStore.getState().turns.s1).toEqual({
+      "2026-09-10T10:01:30Z": [{ kind: "thinking", iteration: 1, text: "first turn thoughts" }],
+    });
+  });
+
+  it("survives a reload (hydrated back out of storage)", async () => {
+    transcript("first reply");
+    startChatStream("s1", "hi");
+    h.handlers?.onThinking?.(1, "still here");
+    h.handlers?.onDone();
+    transcript("first reply", "the reply");
+    h.settlers.forEach((s) => s.resolve());
+    await vi.waitFor(() => expect(stream("s1")).toBeUndefined());
+    useChatStreamStore.setState({ turns: {} }); // a fresh tab
+    hydrateTurns("s1");
+    expect(useChatStreamStore.getState().turns.s1).toEqual({
+      "2026-09-10T10:01:30Z": [{ kind: "thinking", iteration: 1, text: "still here" }],
+    });
+  });
+
+  it("drops the turn rather than staple it to the previous reply", async () => {
+    // The handover refetch failed, so the cache still ends at the PREVIOUS
+    // assistant row. Writing there would misattribute it, permanently.
+    transcript("first reply");
+    startChatStream("s1", "hi");
+    h.handlers?.onThinking?.(1, "would be misfiled");
+    h.handlers?.onDone();
+    // Only the messages refetch fails; the sessions one is a separate promise
+    // the store deliberately doesn't await (rejecting it here would just be an
+    // unhandled rejection in the test, not a code path).
+    h.settlers[0].reject(new Error("refetch failed"));
+    h.settlers.slice(1).forEach((s) => s.resolve());
+    await vi.waitFor(() => expect(stream("s1")).toBeUndefined());
+    expect(useChatStreamStore.getState().turns.s1).toBeUndefined();
+  });
+
+  it("keeps the parts of a turn the operator stopped", async () => {
+    transcript("first reply");
+    startChatStream("s1", "hi");
+    h.handlers?.onThinking?.(1, "half a thought");
+    stopChatStream("s1");
+    transcript("first reply", "partial");
+    h.settlers.forEach((s) => s.resolve());
+    await vi.waitFor(() => expect(stream("s1")).toBeUndefined());
+    expect(useChatStreamStore.getState().turns.s1).toEqual({
+      "2026-09-10T10:01:30Z": [{ kind: "thinking", iteration: 1, text: "half a thought" }],
+    });
+  });
+
+  it("stores nothing for a plain text turn", async () => {
+    transcript("first reply");
     startChatStream("s1", "hi");
     h.handlers?.onThinking?.(1);
     h.handlers?.onChunk("done");
     h.handlers?.onDone();
-    expect(useChatStreamStore.getState().turnThinking.s1).toBeUndefined();
-  });
-
-  it("drops the previous turn's reasoning when a new one starts", () => {
-    startChatStream("s1", "hi");
-    h.handlers?.onThinking?.(1, "first turn thoughts");
-    h.handlers?.onDone();
-    expect(useChatStreamStore.getState().turnThinking.s1).toHaveLength(1);
-    startChatStream("s1", "again");
-    expect(useChatStreamStore.getState().turnThinking.s1).toBeUndefined();
+    transcript("first reply", "done");
+    h.settlers.forEach((s) => s.resolve());
+    await vi.waitFor(() => expect(stream("s1")).toBeUndefined());
+    expect(useChatStreamStore.getState().turns.s1).toBeUndefined();
   });
 
   it("does not repeat a thinking marker for the same pass", () => {

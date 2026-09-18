@@ -143,6 +143,7 @@ describe("channelFieldsFor", () => {
 describe("editing an attached server", () => {
   const server: McpServer = {
     name: "gh",
+    permission: "mcp:gh/:x",
     tool_count: 3,
     args: ["-y", "server-github"],
     command: "npx",

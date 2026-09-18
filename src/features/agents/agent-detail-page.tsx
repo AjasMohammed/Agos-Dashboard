@@ -1,39 +1,52 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, PowerOff, Trash2 } from "lucide-react";
+import {
+  Activity,
+  ArrowLeft,
+  Coins,
+  Cpu,
+  ListChecks,
+  PowerOff,
+  Trash2,
+  Wrench,
+  Zap,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   useAgent,
   useAgentCosts,
-  useAgentIdentity,
   useAgentInbox,
-  useAgentMemory,
-  useAgentScratchPage,
   useAgentScratchpad,
-  useDeleteAgentScratchPage,
   useDisconnectAgent,
   useRemoveAgent,
   useRevokePermission,
-  useSaveAgentScratchPage,
-  type MemoryTier,
 } from "@/api/queries/agents";
-import { PageHeader } from "@/components/page-header";
+import type { TaskSummary } from "@/api/models";
+import { PageHeader, SectionHeader } from "@/components/page-header";
 import { QueryState } from "@/components/query-state";
+import { DataTable, type Column } from "@/components/data-table";
+import { EmptyState } from "@/components/empty-state";
+import { When } from "@/components/when";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
+import { Stat, StatGrid } from "@/components/ui/stat";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
+import { toneFor } from "@/lib/status-tone";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { confirm } from "@/lib/confirm";
 import { toastError } from "@/lib/errors";
 import { relativeTime, tokens, usd } from "@/lib/format";
 import { formatDuration } from "@/lib/task-duration";
-import { useDirtyGuard } from "@/lib/use-dirty-guard";
 import { AgentSettingsDialog } from "./agent-settings-dialog";
 import { GrantPermissionDialog } from "./grant-permission-dialog";
-import { SegmentedControl } from "@/components/ui/segmented";
+import { AgentMcpCard } from "./agent-mcp-card";
+import { AgentMemoryCard } from "./agent-memory-card";
+import { AgentInboxCard } from "./agent-inbox-card";
+import { AgentIdentityCard } from "./agent-identity-card";
+import { AgentScratchpadCard } from "./agent-scratchpad-card";
+import { isMcpResource, parsePermission } from "./permission-catalog";
 
 /**
  * `cost_snapshot` is typed as an opaque object in the contract; this mirrors
@@ -78,16 +91,16 @@ function CostSnapshotView({ snapshot }: { snapshot: object }) {
   }
   return (
     <div className="space-y-3">
-      <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-sm">
+      <dl className="divide-y divide-border text-sm">
         {rows.map(([k, v]) => (
-          <div key={k} className="contents">
-            <dt className="text-muted-foreground">{k}</dt>
-            <dd className="font-mono">{v}</dd>
+          <div key={k} className="flex items-center justify-between gap-3 py-1.5">
+            <dt className="text-xs text-muted-foreground">{k}</dt>
+            <dd className="tnum font-mono text-xs">{v}</dd>
           </div>
         ))}
       </dl>
       <details>
-        <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+        <summary className="cursor-pointer select-none text-xs text-muted-foreground transition-colors hover:text-foreground">
           Raw JSON
         </summary>
         <pre className="mt-2 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
@@ -98,138 +111,173 @@ function CostSnapshotView({ snapshot }: { snapshot: object }) {
   );
 }
 
-const MEMORY_TIERS: { tier: MemoryTier; label: string }[] = [
-  { tier: "episodic", label: "Episodic" },
-  { tier: "semantic", label: "Semantic" },
-  { tier: "procedural", label: "Procedural" },
+/** MCP server grants live in their own card, not the generic list. */
+function generalPermissions(permissions: string[]): string[] {
+  return permissions.filter((p) => !isMcpResource(parsePermission(p)?.resource ?? ""));
+}
+
+/**
+ * `Stat` has no "muted" tone, so an unknown status simply goes untinted — the
+ * mapping itself is `StatusBadge`'s, so the number and the badge beside it can
+ * never tell different stories about the same word.
+ */
+function statusTone(status: string): "success" | "warning" | "danger" | "info" | undefined {
+  const tone = toneFor(status);
+  return tone === "muted" ? undefined : tone;
+}
+
+// API vocabulary (crates/agentos-api/src/util.rs):
+// queued running waiting suspended complete failed cancelled
+const TASK_RUNNING = ["running", "queued", "waiting", "suspended"];
+const TASK_FAILED = ["failed", "cancelled"];
+
+/**
+ * At-a-glance health and budget. Every value is a real field — `useAgentCosts`
+ * 404s for an agent that has not spent anything yet, which is a legitimate
+ * "nothing recorded" rather than an error, so those three stats show "—".
+ */
+function AgentMetrics({
+  name,
+  status,
+  provider,
+  model,
+  lastActive,
+  providerHealthy,
+  tasks,
+}: {
+  name: string;
+  status: string;
+  provider: string;
+  model: string;
+  lastActive: string | null | undefined;
+  providerHealthy: boolean | null | undefined;
+  tasks: TaskSummary[];
+}) {
+  const costs = useAgentCosts(name);
+  const c = costs.data;
+  // Three states, not two: still loading says nothing, an error or an empty
+  // result says "nothing recorded". Collapsing the first into the third made the
+  // row assert "No budget set" for the length of the fetch and then contradict
+  // itself — a claim about data nobody had yet.
+  const hint = costs.isLoading ? "Loading…" : !c ? "No cost data yet" : undefined;
+  // A budget exists only when its limit is > 0; a `*_pct` of 0 is what an
+  // unbudgeted agent reports too, so it can never decide this.
+  const budgeted = (limit: number | null | undefined) => limit != null && limit > 0;
+  const running = tasks.filter((t) => TASK_RUNNING.includes(t.status));
+  const failed = tasks.filter((t) => TASK_FAILED.includes(t.status));
+
+  return (
+    <StatGrid min={150}>
+      <Stat
+        icon={Activity}
+        label="Status"
+        value={<span className="capitalize">{status.replace(/_/g, " ")}</span>}
+        tone={statusTone(status)}
+        hint={<When iso={lastActive} prefix="last active" />}
+      />
+      <Stat
+        icon={Cpu}
+        label="Provider"
+        value={providerHealthy == null ? "Unknown" : providerHealthy ? "Healthy" : "Unreachable"}
+        tone={providerHealthy == null ? undefined : providerHealthy ? "success" : "danger"}
+        // Truncated in the tile — the full model id is long, so keep it on hover.
+        hint={<span title={`${provider} · ${model}`}>{`${provider} · ${model}`}</span>}
+      />
+      <Stat
+        icon={Coins}
+        label="Spend today"
+        value={c ? usd(c.cost_usd) : "—"}
+        // The exhaustion forecast rides here rather than in a seventh tile. It
+        // used to live in the deleted `AgentCostCard` and exists nowhere else
+        // for an agent whose `cost_snapshot` is null.
+        hint={
+          hint ??
+          [
+            c && budgeted(c.budget?.max_cost_usd_per_day)
+              ? `${Math.round(c.cost_pct ?? 0)}% of ${usd(c.budget?.max_cost_usd_per_day)}`
+              : "No budget set",
+            c?.forecast_exhaustion_hours != null
+              ? `~${Math.round(c.forecast_exhaustion_hours)}h left`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        }
+      />
+      <Stat
+        icon={Zap}
+        label="Tokens"
+        value={c ? tokens(c.tokens_used) : "—"}
+        hint={
+          hint ??
+          (c && budgeted(c.budget?.max_tokens_per_day)
+            ? `${Math.round(c.tokens_pct ?? 0)}% of ${tokens(c.budget?.max_tokens_per_day)}`
+            : "No budget set")
+        }
+      />
+      <Stat
+        icon={Wrench}
+        label="Tool calls"
+        value={c ? c.tool_calls.toLocaleString() : "—"}
+        hint={hint ?? <When iso={c?.period_start} prefix="since" />}
+      />
+      <Stat
+        icon={ListChecks}
+        label="Recent tasks"
+        value={tasks.length}
+        hint={
+          tasks.length === 0 ? "None yet" : `${running.length} running · ${failed.length} failed`
+        }
+      />
+    </StatGrid>
+  );
+}
+
+const TASK_COLUMNS: Column<TaskSummary>[] = [
+  {
+    key: "prompt",
+    header: "Task",
+    // `w-full` makes this column absorb the width the other two don't need;
+    // `max-w-0` then lets it shrink so `truncate` has something to act on in an
+    // auto-layout table. Without the pair, the prompt truncates to its own
+    // content width with the rest of the row left empty.
+    className: "w-full max-w-0",
+    // A real link, not just the row's click handler: triage means ⌘-clicking
+    // three failed tasks into tabs, and "Copy link address". `DataTable` ignores
+    // clicks that land on an `<a>`, so the row handler still covers the rest of
+    // the row.
+    cell: (t) => (
+      <Link
+        to="/tasks/$id"
+        params={{ id: t.id }}
+        className="block truncate hover:underline"
+        title={t.prompt_preview}
+      >
+        {t.prompt_preview}
+      </Link>
+    ),
+  },
+  { key: "status", header: "Status", cell: (t) => <StatusBadge status={t.status} /> },
+  {
+    key: "created",
+    header: "Created",
+    align: "right",
+    cell: (t) => <When iso={t.created_at} className="text-muted-foreground" />,
+  },
 ];
-
-/** Read-only browse/search of an agent's 3-tier memory. */
-function MemoryBrowser({ name }: { name: string }) {
-  const [tier, setTier] = useState<MemoryTier>("episodic");
-  const [q, setQ] = useState("");
-  const [debouncedQ, setDebouncedQ] = useState("");
-  // Debounce so we don't fire a search per keystroke (same as Marketplace).
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQ(q), 300);
-    return () => clearTimeout(t);
-  }, [q]);
-  const query = useAgentMemory(name, tier, debouncedQ);
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Memory</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <SegmentedControl
-            aria-label="Memory tier"
-            options={MEMORY_TIERS.map((t) => ({ value: t.tier, label: t.label }))}
-            value={tier}
-            onChange={setTier}
-          />
-          <Input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search this tier…"
-            className="ml-auto max-w-xs"
-          />
-        </div>
-        <QueryState
-          query={query}
-          isEmpty={(d) => d.length === 0}
-          empty={
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              No {tier} memory{q.trim() ? " matches" : " yet"}.
-            </p>
-          }
-        >
-          {(items) => (
-            <div className="space-y-2">
-              {items.map((m) => (
-                <div key={`${m.tier}-${m.id}`} className="rounded-md border border-border p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="min-w-0 truncate text-sm font-medium">{m.title}</p>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Badge variant="muted">{m.kind}</Badge>
-                      {m.score != null && (
-                        <span className="text-xs text-muted-foreground">{m.score.toFixed(2)}</span>
-                      )}
-                    </div>
-                  </div>
-                  {m.content && (
-                    <p className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-xs text-muted-foreground">
-                      {m.content}
-                    </p>
-                  )}
-                  <p className="mt-1 text-xs text-muted-foreground">{relativeTime(m.created_at)}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </QueryState>
-      </CardContent>
-    </Card>
-  );
-}
-
-/** Read-only agent-to-agent message timeline. */
-function InboxTimeline({ name }: { name: string }) {
-  const query = useAgentInbox(name);
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Inbox · agent-to-agent</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <QueryState
-          query={query}
-          isEmpty={(d) => d.length === 0}
-          empty={
-            <p className="py-6 text-center text-sm text-muted-foreground">No messages yet.</p>
-          }
-        >
-          {(items) => (
-            <div className="space-y-2">
-              {items.map((m) => (
-                <div key={m.id} className="rounded-md border border-border p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="min-w-0 truncate text-sm">
-                      <code className="text-xs">{m.from.slice(0, 8)}</code>
-                      <span className="text-muted-foreground"> → {m.to}</span>
-                    </p>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Badge variant="muted">{m.kind}</Badge>
-                      {m.signed && <span className="text-xs text-muted-foreground">signed</span>}
-                    </div>
-                  </div>
-                  {m.preview && (
-                    <p className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-xs text-muted-foreground">
-                      {m.preview}
-                    </p>
-                  )}
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {relativeTime(m.timestamp)}
-                    {m.reply_to ? " · reply" : ""}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
-        </QueryState>
-      </CardContent>
-    </Card>
-  );
-}
 
 export function AgentDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
   const navigate = useNavigate();
   const query = useAgent(name);
-  const identity = useAgentIdentity(name);
   const disconnect = useDisconnectAgent();
   const remove = useRemoveAgent();
   const revoke = useRevokePermission(name);
+  const [tab, setTab] = useState("overview");
+  // Tab counts. React Query dedupes by key, so the tab body's own call to these
+  // same hooks is a cache read rather than a second request.
+  const inbox = useAgentInbox(name);
+  const scratchpad = useAgentScratchpad(name);
 
   async function onDisconnect() {
     // A second click while the DELETE is in flight 404s and lands a red toast
@@ -289,23 +337,48 @@ export function AgentDetailPage() {
   }
 
   return (
-    <div>
-      <div className="flex items-center gap-2 pt-6 text-sm text-muted-foreground">
-        <Button asChild variant="ghost" size="icon">
-          <Link to="/agents">
-            <ArrowLeft />
-          </Link>
-        </Button>
-        Agents
-      </div>
+    <div className="pb-10">
       <QueryState query={query}>
         {(detail) => {
           const a = detail.summary;
+          const perms = generalPermissions(detail.permissions);
           return (
-            <div className="space-y-6 pb-10">
+            <div className="space-y-5">
               <PageHeader
-                title={a.name}
-                description={`${a.provider} · ${a.model}`}
+                back={
+                  <Link
+                    to="/agents"
+                    className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <ArrowLeft className="size-3.5" /> Agents
+                  </Link>
+                }
+                title={
+                  <span className="flex items-center gap-3">
+                    <AgentAvatar name={a.name} src={a.avatar} className="size-9 text-sm" />
+                    {a.name}
+                  </span>
+                }
+                description={detail.description || `${a.provider} · ${a.model}`}
+                meta={
+                  <>
+                    <StatusBadge status={a.status} />
+                    {a.roles.map((r) => (
+                      <Badge key={r} variant="muted">
+                        {r}
+                      </Badge>
+                    ))}
+                    {a.supports_images && <Badge variant="secondary">images</Badge>}
+                    {detail.thinking_level && (
+                      <Badge variant="outline" title="Default reasoning depth for this agent">
+                        thinking: {detail.thinking_level}
+                      </Badge>
+                    )}
+                    <span className="text-sm text-muted-foreground">
+                      <When iso={a.connected_at} prefix="connected" />
+                    </span>
+                  </>
+                }
                 actions={
                   <>
                     <AgentSettingsDialog name={name} />
@@ -324,339 +397,142 @@ export function AgentDetailPage() {
                   </>
                 }
               />
-              <div className="flex flex-wrap items-center gap-2">
-                <StatusBadge status={a.status} />
-                {a.roles.map((r) => (
-                  <Badge key={r} variant="muted">
-                    {r}
-                  </Badge>
-                ))}
-                {a.supports_images && <Badge variant="secondary">images</Badge>}
-                {detail.provider_healthy === false && (
-                  <Badge
-                    variant="outline"
-                    className="border-destructive/50 text-destructive"
-                    title="The agent's LLM provider did not answer a health check"
-                  >
-                    provider unreachable
-                  </Badge>
-                )}
-                {detail.provider_healthy === true && (
-                  <Badge variant="outline" title="The agent's LLM provider answered a health check">
-                    provider ok
-                  </Badge>
-                )}
-                <span className="text-sm text-muted-foreground">
-                  connected {relativeTime(a.connected_at)}
-                </span>
-              </div>
 
-              <div className="grid gap-6 lg:grid-cols-2">
-                <Card>
-                  <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-                    <CardTitle>Permissions</CardTitle>
-                    <GrantPermissionDialog name={name} granted={detail.permissions} />
-                  </CardHeader>
-                  <CardContent>
-                    {detail.permissions.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">
-                        No permissions granted. Use Grant to see what {name} can be given.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1">
-                        {detail.permissions.map((p) => (
-                          <li
-                            key={p}
-                            className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-1.5 text-sm"
-                          >
-                            <code className="truncate">{p}</code>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              disabled={revoke.isPending}
-                              onClick={() => void onRevoke(p)}
-                            >
-                              Revoke
-                            </Button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </CardContent>
-                </Card>
+              <AgentMetrics
+                name={name}
+                status={a.status}
+                provider={a.provider}
+                model={a.model}
+                lastActive={a.last_active}
+                providerHealthy={detail.provider_healthy}
+                tasks={detail.recent_tasks}
+              />
 
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Recent tasks</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {detail.recent_tasks.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No recent tasks.</p>
-                    ) : (
-                      <ul className="space-y-1">
-                        {detail.recent_tasks.map((t) => (
-                          <li key={t.id} className="flex items-center justify-between gap-2 text-sm">
-                            <Link
-                              to="/tasks/$id"
-                              params={{ id: t.id }}
-                              className="truncate hover:underline"
-                            >
-                              {t.prompt_preview}
-                            </Link>
-                            <StatusBadge status={t.status} />
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
+              <Tabs value={tab} onValueChange={setTab}>
+                <TabsList>
+                  <TabsTrigger value="overview">Overview</TabsTrigger>
+                  <TabsTrigger value="access" count={detail.permissions.length}>
+                    Access
+                  </TabsTrigger>
+                  <TabsTrigger value="memory">Memory</TabsTrigger>
+                  <TabsTrigger value="inbox" count={inbox.data?.length}>
+                    Inbox
+                  </TabsTrigger>
+                  <TabsTrigger value="scratchpad" count={scratchpad.data?.pages.length}>
+                    Scratchpad
+                  </TabsTrigger>
+                </TabsList>
 
-              {identity.data && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Identity</CardTitle>
-                  </CardHeader>
-                  <CardContent className="grid gap-2 text-sm sm:grid-cols-2">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Fingerprint</p>
-                      <code className="break-all">{identity.data.fingerprint}</code>
+                <TabsContent value="overview">
+                  {/* Tasks take the wide column; the reference cards stack beside
+                      them on a wide screen and below them on anything narrower. */}
+                  <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
+                    <div className="min-w-0">
+                      <SectionHeader title="Recent tasks" count={detail.recent_tasks.length} />
+                      <DataTable
+                        columns={TASK_COLUMNS}
+                        rows={detail.recent_tasks}
+                        getRowId={(t) => t.id}
+                        onRowClick={(t) => navigate({ to: "/tasks/$id", params: { id: t.id } })}
+                        maxHeight="20rem"
+                        emptyMessage={`${name} has not run a task yet.`}
+                      />
                     </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">Status</p>
-                      <StatusBadge status={identity.data.status} />
+                    <div className="min-w-0 space-y-4">
+                      {detail.cost_snapshot != null && (
+                        <Card>
+                          <CardHeader>
+                            <CardTitle>Budget snapshot</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <CostSnapshotView snapshot={detail.cost_snapshot} />
+                          </CardContent>
+                        </Card>
+                      )}
+                      <AgentIdentityCard name={name} />
+                      {detail.system_prompt && (
+                        <Card>
+                          <CardHeader>
+                            <CardTitle>System prompt</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                              {detail.system_prompt}
+                            </p>
+                          </CardContent>
+                        </Card>
+                      )}
                     </div>
-                    <div className="sm:col-span-2">
-                      <p className="text-xs text-muted-foreground">Public key</p>
-                      <code className="break-all text-xs text-muted-foreground">
-                        {identity.data.public_key_hex}
-                      </code>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
+                  </div>
+                </TabsContent>
 
-              <MemoryBrowser name={name} />
+                <TabsContent value="access">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <Card>
+                      <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+                        <CardTitle>Permissions</CardTitle>
+                        <GrantPermissionDialog name={name} granted={detail.permissions} />
+                      </CardHeader>
+                      <CardContent>
+                        {/* Gated on the full grant list, not the filtered one:
+                            an agent with only MCP grants has permissions, they
+                            are just rendered in the card next door. */}
+                        {detail.permissions.length === 0 ? (
+                          <EmptyState
+                            compact
+                            title="No permissions granted"
+                            description={`Use Grant to see what ${name} can be given.`}
+                          />
+                        ) : perms.length === 0 ? (
+                          <EmptyState
+                            compact
+                            title="No direct permissions"
+                            description="This agent's access comes from its MCP server grants."
+                          />
+                        ) : (
+                          <ul className="max-h-80 space-y-1 overflow-y-auto">
+                            {perms.map((p) => (
+                              <li
+                                key={p}
+                                className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:border-input"
+                              >
+                                <code className="truncate">{p}</code>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={revoke.isPending}
+                                  onClick={() => void onRevoke(p)}
+                                >
+                                  Revoke
+                                </Button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </CardContent>
+                    </Card>
+                    <AgentMcpCard name={name} granted={detail.permissions} />
+                  </div>
+                </TabsContent>
 
-              <InboxTimeline name={name} />
+                <TabsContent value="memory">
+                  <AgentMemoryCard name={name} />
+                </TabsContent>
 
-              <AgentCostCard name={name} />
+                <TabsContent value="inbox">
+                  <AgentInboxCard name={name} />
+                </TabsContent>
 
-              <AgentScratchpadCard name={name} />
-
-              {detail.cost_snapshot != null && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Cost snapshot</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <CostSnapshotView snapshot={detail.cost_snapshot} />
-                  </CardContent>
-                </Card>
-              )}
+                {/* Force-mounted so unsaved editor text survives a tab switch —
+                    hidden by class rather than unmounted. */}
+                <TabsContent value="scratchpad" forceMount className="data-[state=inactive]:hidden">
+                  <AgentScratchpadCard name={name} />
+                </TabsContent>
+              </Tabs>
             </div>
           );
         }}
       </QueryState>
     </div>
-  );
-}
-
-/** Current-period cost/budget snapshot for one agent. */
-function AgentCostCard({ name }: { name: string }) {
-  const query = useAgentCosts(name);
-  if (query.isError) return null; // no cost data recorded yet — skip the card
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Costs (current period)</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <QueryState query={query}>
-          {(c) => (
-            <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-              <div>
-                <p className="text-xs text-muted-foreground">Spend</p>
-                <p className="font-medium">
-                  ${c.cost_usd.toFixed(4)}
-                  {c.cost_pct != null ? ` (${Math.round(c.cost_pct)}%)` : ""}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Tokens</p>
-                <p className="font-medium">
-                  {c.tokens_used.toLocaleString()}
-                  {c.tokens_pct != null ? ` (${Math.round(c.tokens_pct)}%)` : ""}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Tool calls</p>
-                <p className="font-medium">{c.tool_calls}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Budget exhausts</p>
-                <p className="font-medium">
-                  {c.forecast_exhaustion_hours != null
-                    ? `~${Math.round(c.forecast_exhaustion_hours)}h`
-                    : "—"}
-                </p>
-              </div>
-            </div>
-          )}
-        </QueryState>
-      </CardContent>
-    </Card>
-  );
-}
-
-/** Agent-scoped scratchpad: list, edit, delete pages owned by this agent. */
-function AgentScratchpadCard({ name }: { name: string }) {
-  const list = useAgentScratchpad(name);
-  const [page, setPage] = useState<string | null>(null);
-  const detail = useAgentScratchPage(name, page);
-  const save = useSaveAgentScratchPage(name);
-  const del = useDeleteAgentScratchPage(name);
-  const [content, setContent] = useState("");
-  // The text the server last confirmed for this page. Unlike the scratchpad
-  // dialog, this editor stays open after a save — and the save invalidates the
-  // very query it renders from. Without a baseline to compare against, that
-  // refetch silently replaces everything typed since with the server copy.
-  //
-  // State, not a ref: `dirty` and the `useBlocker` inside `useDirtyGuard` are
-  // both derived from it, and a ref assignment renders nothing — so after a
-  // save the blocker stayed armed and a fully-saved document still prompted
-  // "Discard unsaved changes?" (and "Leave site?" on reload). Training people
-  // to click through a false prompt is how they click through the true one.
-  const [baseline, setBaseline] = useState<string | null>(null);
-  const dirty = baseline != null && content !== baseline;
-  const { confirmDiscard } = useDirtyGuard(dirty);
-
-  // A different page is a different document: clear the baseline so the sync
-  // below treats the incoming content as a first load rather than a remote edit.
-  useEffect(() => {
-    setBaseline(null);
-    setContent("");
-  }, [page]);
-
-  useEffect(() => {
-    const server = detail.data?.content;
-    if (server == null) return;
-    // Adopt the server copy on first load, and on a genuine remote edit — but
-    // only while the editor is untouched, never over unsaved keystrokes.
-    const remoteEdit = server !== baseline && content === baseline;
-    if (baseline === null || remoteEdit) {
-      setBaseline(server);
-      setContent(server);
-    }
-    // Deliberately not keyed on `baseline`: a save sets it while the query it
-    // invalidated still holds the *pre-save* copy, so re-running here would see
-    // an untouched editor against a "different" server value and revert the
-    // text that was just saved. Only new server data or new keystrokes should
-    // re-evaluate; the closure already reads the latest baseline when they do.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail.data, content]);
-
-  // Switching pages stays on the same route, so `useDirtyGuard`'s blocker never
-  // sees it — ask here instead.
-  async function selectPage(title: string) {
-    if (title === page || !(await confirmDiscard())) return;
-    setPage(title);
-  }
-
-  function onSave() {
-    if (save.isPending || page == null) return;
-    const sent = content;
-    save
-      .mutateAsync(
-        { page, content: sent },
-        {
-          // Baseline what we sent, so the refetch this save triggers reads as
-          // the same document. If the server normalised the body the next load
-          // differs from the baseline and is adopted — but only if nothing was
-          // typed since. In `onSuccess` rather than a `.then()` so clearing the
-          // dirty guard does not ride on promise/network ordering.
-          onSuccess: () => setBaseline(sent),
-        },
-      )
-      .then(() => toast.success("Saved"))
-      .catch(toastError);
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Scratchpad</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <QueryState
-          query={list}
-          isEmpty={(d) => d.pages.length === 0}
-          empty={
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              No private pages for this agent.
-            </p>
-          }
-        >
-          {(data) => (
-            <div className="flex flex-wrap gap-1.5">
-              {data.pages.map((p) => (
-                <Button
-                  key={p.id}
-                  size="sm"
-                  variant={page === p.title ? "default" : "outline"}
-                  onClick={() => void selectPage(p.title)}
-                >
-                  {p.title}
-                </Button>
-              ))}
-            </div>
-          )}
-        </QueryState>
-        {page != null && (
-          <div className="mt-3 space-y-2">
-            {detail.isPending || !detail.data ? (
-              <Skeleton className="h-32 w-full" />
-            ) : (
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                className="min-h-[160px] font-mono text-xs"
-              />
-            )}
-            <div className="flex items-center justify-end gap-2">
-              {dirty && <span className="mr-auto text-xs text-warning">Unsaved changes</span>}
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={del.isPending}
-                onClick={async () => {
-                  if (
-                    !(await confirm({
-                      title: `Delete "${page}"?`,
-                      description: `This page is removed from ${name}'s scratchpad.`,
-                      destructive: true,
-                      confirmLabel: "Delete",
-                    }))
-                  )
-                    return;
-                  del
-                    .mutateAsync(page)
-                    .then(() => {
-                      toast.success("Deleted");
-                      setPage(null);
-                    })
-                    .catch(toastError);
-                }}
-              >
-                Delete
-              </Button>
-              <Button size="sm" disabled={save.isPending || !detail.data} onClick={onSave}>
-                {save.isPending ? "Saving…" : "Save"}
-              </Button>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
   );
 }

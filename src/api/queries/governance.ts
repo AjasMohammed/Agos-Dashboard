@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client, unwrap } from "../client";
+import { notificationKeys } from "./notifications";
 import type {
   Escalation,
   PrefProposal,
@@ -9,6 +10,7 @@ import type {
   AuditEntryDetail,
   ApprovalPolicy,
   AddApprovalPolicyBody,
+  ResolveEscalationResponse,
   WorkspaceGrant,
   GrantWorkspaceBody,
 } from "../models";
@@ -46,15 +48,37 @@ export function useEscalations(opts?: {
 export function useResolveEscalation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (vars: { id: string; decision: string; note?: string }) => {
-      unwrap(
+    mutationFn: async (vars: {
+      id: string;
+      decision: string;
+      note?: string;
+      /**
+       * On approve, also mint a standing grant so this tool stops asking. The
+       * kernel decides its scope (the agent, and the payload's path when there
+       * is one) and refuses to mint one it cannot scope, so the answer is in
+       * `remember_note` — show it rather than claiming what was remembered.
+       */
+      remember?: boolean;
+    }) =>
+      unwrap<ResolveEscalationResponse>(
         await client.POST("/api/v1/escalations/{id}/resolve", {
           params: { path: { id: Number(vars.id) } },
-          body: { decision: vars.decision, note: vars.note },
+          body: { decision: vars.decision, note: vars.note, remember: vars.remember },
         }),
-      );
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: escalationKeys.all }),
+      ),
+    // A `remember` also mints an approval-policy row, so that list is stale too.
+    // The inbox as well: resolving does not retract the escalation's
+    // notification row, so without this the bell panel demotes it to a plain row
+    // that still reads "Needs your approval" until the next poll.
+    // Returned, not fire-and-forget: react-query awaits it, so the button stays
+    // disabled until the refetch lands instead of re-enabling over a row the
+    // list still shows as pending.
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: escalationKeys.all }),
+        qc.invalidateQueries({ queryKey: approvalPolicyKeys.all }),
+        qc.invalidateQueries({ queryKey: notificationKeys.all }),
+      ]),
   });
 }
 

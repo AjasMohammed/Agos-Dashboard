@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Role, ToolSummary } from "@/api/models";
 import {
+  coveringGrant,
   grantedBits,
   groupCatalog,
   groupOf,
@@ -13,7 +14,16 @@ import {
 import { KNOWN_PERMISSIONS } from "./permission-catalog.gen";
 
 const tool = (name: string, permissions: string[]) =>
-  ({ id: name, name, version: "1", description: "", author: "", trust_tier: "core", status: "installed", permissions }) as ToolSummary;
+  ({
+    id: name,
+    name,
+    version: "1",
+    description: "",
+    author: "",
+    trust_tier: "core",
+    status: "installed",
+    permissions,
+  }) as ToolSummary;
 const role = (name: string, permissions: string[]) =>
   ({ name, description: "", permissions, created_at: "" }) as Role;
 
@@ -22,7 +32,10 @@ describe("parsePermission", () => {
     expect(parsePermission("fs:/data/:rw")).toEqual({ resource: "fs:/data/", bits: "rw" });
   });
   it("canonicalises bit order", () => {
-    expect(parsePermission("memory.semantic:qr")).toEqual({ resource: "memory.semantic", bits: "rq" });
+    expect(parsePermission("memory.semantic:qr")).toEqual({
+      resource: "memory.semantic",
+      bits: "rq",
+    });
   });
   it("rejects what the kernel rejects", () => {
     for (const bad of ["fs.user_data", ":rw", "fs.user_data:", "fs.user_data:rz"]) {
@@ -34,7 +47,10 @@ describe("parsePermission", () => {
 describe("permissionCatalog", () => {
   it("unions bits per resource and records every source", () => {
     const catalog = permissionCatalog(
-      [tool("shell", ["process.exec:x", "fs.user_data:r"]), tool("notes", ["fs.user_data:w", "bogus"])],
+      [
+        tool("shell", ["process.exec:x", "fs.user_data:r"]),
+        tool("notes", ["fs.user_data:w", "bogus"]),
+      ],
       [role("analyst", ["fs.user_data:r", "memory.semantic:rq"])],
     );
     const fs = catalog.find((e) => e.resource === "fs.user_data");
@@ -107,5 +123,16 @@ describe("resourceHint", () => {
   it("falls back to the family for a hand-typed resource", () => {
     expect(resourceHint("fs:/data/")).toBe("Files under this path or namespace.");
     expect(resourceHint("unknown.thing")).toBe("");
+  });
+});
+
+describe("coveringGrant", () => {
+  it("matches the exact server grant, a broad grant, and nothing else", () => {
+    expect(coveringGrant(["mcp:git/:x"], "mcp:git/:x")).toBe("mcp:git/:x");
+    expect(coveringGrant(["mcp:x"], "mcp:git/:x")).toBe("mcp:x");
+    expect(coveringGrant(["mcp:git/:x"], "mcp:github/:x")).toBeUndefined();
+    expect(coveringGrant(["mcp:git/:r"], "mcp:git/:x")).toBeUndefined();
+    expect(coveringGrant(["mcp:a/b:x"], "mcp:a/bc/:x")).toBeUndefined();
+    expect(coveringGrant(["*:rwx", "mcp:git/:x"], "mcp:git/:x")).toBe("mcp:git/:x");
   });
 });

@@ -29,6 +29,11 @@ interface MentionTextareaProps extends Omit<
   menuPlacement?: "top" | "bottom";
   /** Grow with the content instead of scrolling. Cap it with a `max-h-*` class. */
   autoGrow?: boolean;
+  /** Fires when a file is picked from the suggestion menu. The mention itself
+   *  resolves server-side by name, but a name can only ever produce text — an
+   *  image needs its id to reach the vision path — so the composer keeps the id
+   *  and sends it as an attachment. */
+  onFilePicked?: (file: FileMeta) => void;
   /** Fires when the suggestion menu opens/closes. Inside a Radix Dialog, use
    *  this to `preventDefault()` the dialog's `onEscapeKeyDown` while open —
    *  Radix's document-capture Escape listener runs before ours. */
@@ -46,6 +51,7 @@ export function MentionTextarea({
   containerClassName,
   menuPlacement = "top",
   autoGrow = false,
+  onFilePicked,
   onMenuOpenChange,
   onKeyDown,
   onSelect,
@@ -113,6 +119,7 @@ export function MentionTextarea({
     pendingCaret.current = mention.start + inserted.length;
     onValueChange(value.slice(0, mention.start) + inserted + value.slice(caret));
     setMention(null);
+    onFilePicked?.(file);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {

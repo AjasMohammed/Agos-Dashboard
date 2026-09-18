@@ -4,7 +4,10 @@ import type { IterationTrace, TaskTrace, ToolCallTrace } from "@/api/models";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { relativeTime, tokens, usd } from "@/lib/format";
+import { humanizeKey, relativeTime, tokens, usd } from "@/lib/format";
+import { copyText } from "@/lib/clipboard";
+import { readablePayload } from "@/lib/tool-payload";
+import { Markdown } from "@/components/markdown";
 import { Stat, StatGrid } from "@/components/ui/stat";
 
 /**
@@ -39,7 +42,73 @@ function durationLabel(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
 }
 
-/** A collapsible labelled JSON/text block (input or output). */
+/** Arrays longer than this render a "+N more" row; Raw still has everything. */
+const MAX_LIST_ITEMS = 50;
+
+/** Recursive key/value render of a parsed JSON value. */
+function ValueView({ value, depth = 0 }: { value: unknown; depth?: number }) {
+  if (value == null) return <span className="text-muted-foreground">—</span>;
+  if (typeof value === "string") {
+    const text = truncateText(value);
+    return text.includes("\n") || text.length > 120 ? (
+      <span className="block whitespace-pre-wrap break-words">{text}</span>
+    ) : (
+      <span className="break-words">{text}</span>
+    );
+  }
+  if (typeof value !== "object") return <span className="font-mono">{String(value)}</span>;
+  // ponytail: depth cap instead of virtualisation; deeper nodes fall back to JSON.
+  if (depth >= 4) return <span className="block whitespace-pre-wrap font-mono">{asText(value)}</span>;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="text-muted-foreground">none</span>;
+    return (
+      <ol className="space-y-1.5">
+        {value.slice(0, MAX_LIST_ITEMS).map((item, i) => (
+          <li key={i} className="flex gap-2">
+            <span className="w-5 shrink-0 text-right text-muted-foreground">{i + 1}.</span>
+            <div className="min-w-0 flex-1">
+              <ValueView value={item} depth={depth + 1} />
+            </div>
+          </li>
+        ))}
+        {value.length > MAX_LIST_ITEMS && (
+          <li className="text-muted-foreground">+{value.length - MAX_LIST_ITEMS} more (see Raw)</li>
+        )}
+      </ol>
+    );
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) return <span className="text-muted-foreground">empty</span>;
+  return (
+    <dl className="grid grid-cols-[minmax(6rem,auto)_1fr] gap-x-3 gap-y-1">
+      {entries.map(([k, v]) => (
+        <div key={k} className="contents">
+          <dt className="text-muted-foreground">{humanizeKey(k)}</dt>
+          <dd className="min-w-0">
+            <ValueView value={v} depth={depth + 1} />
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** Readable body of a payload: markdown for tool prose, key/value for objects. */
+function ReadableView({ value }: { value: unknown }) {
+  const parsed = useMemo(() => readablePayload(value), [value]);
+  if (parsed.kind === "empty") return <span className="text-muted-foreground">empty</span>;
+  if (parsed.kind === "text") {
+    const text = truncateText(parsed.text);
+    return parsed.markdown ? (
+      <Markdown className="text-sm" math={false}>{text}</Markdown>
+    ) : (
+      <span className="block whitespace-pre-wrap break-words">{text}</span>
+    );
+  }
+  return <ValueView value={parsed.value} />;
+}
+
+/** A collapsible labelled input/output block, readable by default with a Raw toggle. */
 function Payload({
   label,
   value,
@@ -52,31 +121,57 @@ function Payload({
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
-  // Cheap enough to decide "is there anything here" without stringifying:
-  // `asText` returns "" for exactly these two.
+  const [raw, setRaw] = useState(false);
   const empty = value == null || value === "";
-  const text = useMemo(() => (open ? asText(value) : ""), [open, value]);
+  const rawText = useMemo(() => (open && raw ? asText(value) : ""), [open, raw, value]);
   if (empty) return null;
   return (
     <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)} className="group">
       <summary className="flex cursor-pointer select-none items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground">
         <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
         {label}
-      </summary>
-      <pre
-        className={cn(
-          "mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/50 p-3 text-xs",
-          tone === "danger" && "border-destructive/40 bg-destructive/5 text-destructive",
+        {open && (
+          <span className="ml-auto flex gap-1">
+            <button
+              type="button"
+              className="rounded px-1.5 py-0.5 hover:bg-accent"
+              onClick={(e) => {
+                e.preventDefault();
+                setRaw((r) => !r);
+              }}
+            >
+              {raw ? "Readable" : "Raw"}
+            </button>
+            <button
+              type="button"
+              className="rounded px-1.5 py-0.5 hover:bg-accent"
+              onClick={(e) => {
+                e.preventDefault();
+                const p = readablePayload(value);
+                void copyText(p.kind === "text" ? p.text : asText(value), label);
+              }}
+            >
+              Copy
+            </button>
+          </span>
         )}
-      >
-        {text}
-      </pre>
+      </summary>
+      {open && (
+        <div
+          className={cn(
+            "mt-1.5 max-h-[32rem] overflow-auto break-words rounded-md border border-border bg-muted/50 p-3 text-xs",
+            tone === "danger" && "border-destructive/40 bg-destructive/5 text-destructive",
+          )}
+        >
+          {raw ? <pre className="whitespace-pre-wrap font-mono">{rawText}</pre> : <ReadableView value={value} />}
+        </div>
+      )}
     </details>
   );
 }
 
 /** One tool invocation: name, status, timing, and its input + output payloads. */
-function ToolCall({ call }: { call: ToolCallTrace }) {
+export function ToolCall({ call, collapsed = false }: { call: ToolCallTrace; collapsed?: boolean }) {
   const denied = !call.permission_check.granted;
   const failed = Boolean(call.error);
   return (
@@ -111,7 +206,7 @@ function ToolCall({ call }: { call: ToolCallTrace }) {
         {failed ? (
           <Payload label="Error" value={call.error} tone="danger" defaultOpen />
         ) : (
-          <Payload label="Output" value={call.output_json} defaultOpen />
+          <Payload label="Output" value={call.output_json} defaultOpen={!collapsed} />
         )}
       </div>
     </div>

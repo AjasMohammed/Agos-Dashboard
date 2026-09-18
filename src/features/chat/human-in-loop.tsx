@@ -1,15 +1,12 @@
 import { useState } from "react";
 import { MessageCircleQuestion, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
-import {
-  useAddApprovalPolicy,
-  useEscalations,
-  useResolveEscalation,
-} from "@/api/queries/governance";
+import { useEscalations, useResolveEscalation } from "@/api/queries/governance";
 import { useNotifications, useRespondNotification } from "@/api/queries/notifications";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toastError } from "@/lib/errors";
+import { canRemember, escOptions, matchOption } from "@/features/govern/escalation-options";
 import { pendingHumanInput } from "./pending-human-input";
 import type { Escalation, NotificationSummary } from "@/api/models";
 import { streamTools, type ChatStream } from "./stream-store";
@@ -28,15 +25,13 @@ import { useAuthStore } from "@/auth/store";
  */
 const POLL_MS = 1500;
 
-/** How long an "Always allow" granted from a chat card stays in force. */
-const GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-const escOptions = (e: Escalation) => (e.options?.length ? e.options : ["approve", "deny"]);
-
-function ApprovalCard({ escalation: e, toolName }: { escalation: Escalation; toolName?: string }) {
+export function ApprovalCard({ escalation: e, toolName }: { escalation: Escalation; toolName?: string }) {
   const resolve = useResolveEscalation();
-  const grant = useAddApprovalPolicy();
-  const busy = resolve.isPending || grant.isPending;
+  // Minting the standing grant needs `approvals:w` on top of `escalations:w`,
+  // and the kernel checks it BEFORE resolving — so on a key without it the
+  // click 403s and the escalation stays pending, losing the approval too.
+  const canGrant = useAuthStore((s) => s.can("approvals:w"));
+  const busy = resolve.isPending;
   const id = String(e.id);
 
   function decide(decision: string) {
@@ -46,19 +41,16 @@ function ApprovalCard({ escalation: e, toolName }: { escalation: Escalation; too
       .catch(toastError);
   }
 
-  function alwaysAllow() {
-    if (!toolName) return;
-    // Scope the standing grant to the agent that asked and give it an expiry —
-    // an omitted `agent_id` means EVERY agent and an omitted `expires_at` means
-    // forever, which is far more than one click in one chat should buy.
-    grant
-      .mutateAsync({
-        tool_name: toolName,
-        agent_id: e.agent_id,
-        expires_at: new Date(Date.now() + GRANT_TTL_MS).toISOString(),
-      })
-      .then(() => resolve.mutateAsync({ id, decision: "approve" }))
-      .then(() => toast.success(`Allowing ${toolName} for 30 days`))
+  // Approve AND remember. The kernel mints the standing grant itself — scoped to
+  // this agent, to the call's path when it has one, expiring on its own — and
+  // refuses to mint one it cannot scope safely. So this sends the intent and
+  // reports back whatever it decided (`remember_note`) instead of composing a
+  // grant here and claiming a scope the panel does not control. `decision` is
+  // the escalation's own spelling of approve, never the literal.
+  function alwaysAllow(decision: string) {
+    resolve
+      .mutateAsync({ id, decision, remember: true })
+      .then((r) => toast.success("Approved", { description: r?.remember_note }))
       .catch(toastError);
   }
 
@@ -85,11 +77,19 @@ function ApprovalCard({ escalation: e, toolName }: { escalation: Escalation; too
             {opt.charAt(0).toUpperCase() + opt.slice(1)}
           </Button>
         ))}
-        {/* Only when exactly one call is in flight for this turn — otherwise we
-            cannot say which tool the escalation is for. */}
-        {toolName && (
-          <Button size="sm" variant="ghost" disabled={busy} onClick={alwaysAllow}>
-            Always allow {toolName}
+        {/* Only on the kernel's own tool approvals: on anything else (an
+            agent-authored escalation, a device gate) `remember` is a no-op, so
+            the button would promise something that never happens. No `toolName`
+            needed — the kernel reads the tool off the escalation itself, so this
+            works even when several calls are in flight. */}
+        {canGrant && canRemember(e) && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => alwaysAllow(matchOption(e, "approve")!)}
+          >
+            Always allow{toolName ? ` ${toolName}` : ""}
           </Button>
         )}
       </div>
@@ -97,7 +97,13 @@ function ApprovalCard({ escalation: e, toolName }: { escalation: Escalation; too
   );
 }
 
-function QuestionCard({ n }: { n: NotificationSummary }) {
+export function QuestionCard({
+  n,
+  autoFocus = false,
+}: {
+  n: NotificationSummary;
+  autoFocus?: boolean;
+}) {
   const respond = useRespondNotification();
   const [text, setText] = useState("");
   // ponytail: free text only — surface `options` chips once NotificationSummary
@@ -129,7 +135,7 @@ function QuestionCard({ n }: { n: NotificationSummary }) {
           onChange={(e) => setText(e.target.value)}
           placeholder="Your answer…"
           className="h-8"
-          autoFocus
+          autoFocus={autoFocus}
         />
         <Button type="submit" size="sm" disabled={respond.isPending || !text.trim()}>
           Send
@@ -169,7 +175,10 @@ export function HumanInLoop({ stream }: { stream: ChatStream }) {
         <ApprovalCard key={a.escalation.id} escalation={a.escalation} toolName={a.toolName} />
       ))}
       {questions.map((q) => (
-        <QuestionCard key={q.id} n={q} />
+        // The chat card mounts in response to the operator's own turn, so taking
+        // focus is right here — the bell panel mounts on every open, where it
+        // would be a focus steal, and passes nothing.
+        <QuestionCard key={q.id} n={q} autoFocus />
       ))}
     </div>
   );

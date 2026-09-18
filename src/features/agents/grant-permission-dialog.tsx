@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import { useGrantPermission } from "@/api/queries/agents";
 import { useRoles } from "@/api/queries/governance";
@@ -21,7 +21,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { toastError } from "@/lib/errors";
+import { errorMessage, toastError } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import {
   PERMISSION_BITS,
@@ -29,6 +29,7 @@ import {
   groupCatalog,
   isGranted,
   missingBits,
+  parsePermission,
   permissionCatalog,
   resourceHint,
   sortBits,
@@ -41,6 +42,10 @@ import {
  * tools declare in `[capabilities_required]` and the ones roles bundle. The
  * resource field stays editable, because path-scoped grants (`fs:/data/`)
  * are legal and no manifest declares them.
+ *
+ * Grants are staged as a set and submitted together: setting up an agent means
+ * handing it a dozen resources at once, and the API's one-permission-per-POST
+ * shape is no reason to make the operator reopen this dialog a dozen times.
  */
 export function GrantPermissionDialog({ name, granted }: { name: string; granted: string[] }) {
   const [open, setOpen] = useState(false);
@@ -53,9 +58,9 @@ export function GrantPermissionDialog({ name, granted }: { name: string; granted
       </DialogTrigger>
       <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Grant a permission</DialogTitle>
+          <DialogTitle>Grant permissions</DialogTitle>
           <DialogDescription>
-            Pick a resource {name} needs, then choose which operations it may perform on it.
+            Tick every resource {name} needs, then adjust which operations it may perform on each.
           </DialogDescription>
         </DialogHeader>
         {/* Radix unmounts a closed dialog, so the catalog is only fetched on open. */}
@@ -90,6 +95,8 @@ function GrantForm({
   const [filter, setFilter] = useState("");
   const [resource, setResource] = useState("");
   const [bits, setBits] = useState("");
+  /** Staged grants, resource -> bits. Insertion order is the display order. */
+  const [staged, setStaged] = useState<Map<string, string>>(new Map());
 
   const held = useMemo(() => grantedBits(granted), [granted]);
   const catalog = useMemo(
@@ -118,28 +125,71 @@ function GrantForm({
     : offered;
   const groups = useMemo(() => groupCatalog(shown), [shown]);
 
-  const permission = resource.trim() && bits ? `${resource.trim()}:${bits}` : "";
-  const alreadyHeld = !!permission && isGranted(held, resource.trim(), bits);
+  // The resource field doubles as the editor for whichever staged row is active.
+  const active = resource.trim();
+  const alreadyHeld = !!bits && isGranted(held, active, bits);
+  const stagedBits = staged.get(active);
   const loading = tools.isLoading || roles.isLoading;
 
-  const selected = catalog.find((e) => e.resource === resource.trim());
+  const selected = catalog.find((e) => e.resource === active);
+  const permissions = useMemo(() => [...staged].map(([r, b]) => `${r}:${b}`), [staged]);
 
-  function select(entry: CatalogEntry) {
+  /** Stage `resource:bits`, or drop the row when `bits` is empty. */
+  function stage(res: string, next: string) {
+    setStaged((m) => {
+      const copy = new Map(m);
+      if (next) copy.set(res, next);
+      else copy.delete(res);
+      return copy;
+    });
+  }
+
+  function toggleRow(entry: CatalogEntry) {
+    if (staged.has(entry.resource)) {
+      stage(entry.resource, "");
+      return;
+    }
+    stage(entry.resource, entry.bits);
+    // Ticking a row also makes it the one the Operations checkboxes edit.
     setResource(entry.resource);
     setBits(entry.bits);
   }
 
   function toggleBit(bit: string) {
-    setBits((b) => sortBits(b.includes(bit) ? b.replace(bit, "") : b + bit));
+    const next = sortBits(bits.includes(bit) ? bits.replace(bit, "") : bits + bit);
+    setBits(next);
+    // Editing operations writes through to an already-staged row, so trimming
+    // `rw` down to `r` needs no second "update" step.
+    if (staged.has(active)) stage(active, next);
   }
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!permission || grant.isPending) return;
+    if (permissions.length === 0 || grant.isPending) return;
     try {
-      await grant.mutateAsync(permission);
-      toast.success(`Granted ${permission}`);
-      onDone();
+      const { granted: ok, failed } = await grant.mutateAsync(permissions);
+      if (ok.length > 0) {
+        toast.success(
+          ok.length === 1 ? `Granted ${ok[0]}` : `Granted ${ok.length} permissions to ${name}`,
+        );
+      }
+      if (failed.length === 0) {
+        onDone();
+        return;
+      }
+      // Keep the dialog open with only the failures staged, so a retry does not
+      // re-send what already landed.
+      setStaged(
+        new Map(
+          failed.flatMap((f) => {
+            const parsed = parsePermission(f.permission);
+            return parsed ? [[parsed.resource, parsed.bits] as [string, string]] : [];
+          }),
+        ),
+      );
+      toast.error(`${failed.length} of ${permissions.length} grants failed`, {
+        description: `${failed[0].permission}: ${errorMessage(failed[0].error)}`,
+      });
     } catch (err) {
       toastError(err);
     }
@@ -148,12 +198,26 @@ function GrantForm({
   return (
     <form onSubmit={onSubmit} className="grid gap-3">
       <div className="grid gap-1.5">
-        <Label htmlFor="perm-filter">
-          Available resources
+        <div className="flex items-baseline justify-between gap-2">
+          <Label htmlFor="perm-filter">
+            Available resources
+            {!loading && shown.length > 0 && (
+              <span className="ml-1 font-normal text-muted-foreground">({shown.length})</span>
+            )}
+          </Label>
           {!loading && shown.length > 0 && (
-            <span className="ml-1 font-normal text-muted-foreground">({shown.length})</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                shown.forEach((e) => !staged.has(e.resource) && stage(e.resource, e.bits))
+              }
+            >
+              Select all{q && " shown"}
+            </Button>
           )}
-        </Label>
+        </div>
         <div className="relative">
           <Search
             aria-hidden
@@ -189,35 +253,39 @@ function GrantForm({
                 <ul>
                   {g.entries.map((e) => (
                     <li key={e.resource}>
-                      <button
-                        type="button"
-                        onClick={() => select(e)}
-                        aria-pressed={resource === e.resource}
+                      <label
                         title={`${resourceHint(e.resource)}\n${sourceLabel(e)}`}
                         className={cn(
-                          "w-full border-b border-border px-3 py-1.5 text-left last:border-b-0 hover:bg-muted/60",
-                          resource === e.resource && "bg-muted",
+                          "flex w-full cursor-pointer items-start gap-2 border-b border-border px-3 py-1.5 text-left last:border-b-0 hover:bg-muted/60",
+                          active === e.resource && "bg-muted",
                         )}
                       >
-                        <span className="flex items-baseline gap-2">
-                          <code className="shrink-0 text-sm">{e.resource}</code>
-                          <Badge variant="muted" className="shrink-0">
-                            {e.bits}
-                          </Badge>
-                          {held.has(e.resource) && (
-                            <Badge
-                              variant="info"
-                              className="shrink-0"
-                              title="Some bits already granted"
-                            >
-                              partial
+                        <Checkbox
+                          className="mt-1"
+                          checked={staged.has(e.resource)}
+                          onChange={() => toggleRow(e)}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-baseline gap-2">
+                            <code className="shrink-0 text-sm">{e.resource}</code>
+                            <Badge variant="muted" className="shrink-0">
+                              {staged.get(e.resource) ?? e.bits}
                             </Badge>
-                          )}
+                            {held.has(e.resource) && (
+                              <Badge
+                                variant="info"
+                                className="shrink-0"
+                                title="Some bits already granted"
+                              >
+                                partial
+                              </Badge>
+                            )}
+                          </span>
+                          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                            {resourceHint(e.resource)}
+                          </span>
                         </span>
-                        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                          {resourceHint(e.resource)}
-                        </span>
-                      </button>
+                      </label>
                     </li>
                   ))}
                 </ul>
@@ -232,15 +300,65 @@ function GrantForm({
         )}
       </div>
 
+      {staged.size > 0 && (
+        <div className="grid gap-1.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <Label>Staged ({staged.size})</Label>
+            <Button type="button" size="sm" variant="ghost" onClick={() => setStaged(new Map())}>
+              Clear
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {[...staged].map(([res, b]) => (
+              <Badge
+                key={res}
+                variant={active === res ? "default" : "outline"}
+                className="gap-0.5 pr-0.5"
+              >
+                <button
+                  type="button"
+                  className="font-mono"
+                  title="Edit which operations this grant covers"
+                  onClick={() => {
+                    setResource(res);
+                    setBits(b);
+                  }}
+                >
+                  {res}:{b}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Remove ${res}`}
+                  className="rounded-sm p-0.5 hover:bg-foreground/10"
+                  onClick={() => stage(res, "")}
+                >
+                  <X className="size-3" />
+                </button>
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
       <Field
         label="Resource"
         hint="Editable — a path prefix like fs:/data/ grants everything under it."
       >
-        <Input
-          value={resource}
-          onChange={(e) => setResource(e.target.value)}
-          placeholder="fs.user_data"
-        />
+        <div className="flex gap-2">
+          <Input
+            value={resource}
+            onChange={(e) => setResource(e.target.value)}
+            placeholder="fs.user_data"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!active || !bits || stagedBits === bits}
+            onClick={() => stage(active, bits)}
+          >
+            {staged.has(active) ? "Update" : "Add"}
+          </Button>
+        </div>
       </Field>
 
       {selected && (
@@ -250,10 +368,13 @@ function GrantForm({
       )}
 
       <div className="grid gap-1.5">
-        <Label>Operations</Label>
+        <Label>
+          Operations
+          {active && <span className="ml-1 font-normal text-muted-foreground">for {active}</span>}
+        </Label>
         <div className="flex flex-wrap gap-x-4 gap-y-2">
           {PERMISSION_BITS.map((b) => {
-            const alreadyOn = (held.get(resource.trim()) ?? "").includes(b.bit);
+            const alreadyOn = (held.get(active) ?? "").includes(b.bit);
             return (
               <label key={b.bit} className="flex items-center gap-2 text-sm" title={b.hint}>
                 <Checkbox checked={bits.includes(b.bit)} onChange={() => toggleBit(b.bit)} />
@@ -266,22 +387,23 @@ function GrantForm({
       </div>
 
       <p className="text-sm text-muted-foreground">
-        {permission ? (
-          <>
-            Grants <code className="text-foreground">{permission}</code>
-            {alreadyHeld && " — already held; granting again changes nothing."}
-          </>
-        ) : (
-          "Pick a resource and at least one operation."
-        )}
+        {staged.size === 0
+          ? "Tick a resource above, or type one and pick at least one operation."
+          : alreadyHeld && stagedBits === bits
+            ? `${name} already holds ${active}:${bits} — granting it again changes nothing.`
+            : `Grants ${staged.size} permission${staged.size === 1 ? "" : "s"}.`}
       </p>
 
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onDone}>
           Cancel
         </Button>
-        <Button type="submit" disabled={!permission || alreadyHeld || grant.isPending}>
-          {grant.isPending ? "Granting…" : "Grant"}
+        <Button type="submit" disabled={staged.size === 0 || grant.isPending}>
+          {grant.isPending
+            ? `Granting ${staged.size}…`
+            : staged.size > 1
+              ? `Grant ${staged.size}`
+              : "Grant"}
         </Button>
       </DialogFooter>
     </form>

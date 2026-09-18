@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWorkspaceGrantBody,
+  canRemember,
   folderGrantWarning,
   normalizeGrantPath,
   grantWarning,
@@ -183,5 +184,19 @@ describe("modeLabel", () => {
     expect(modeLabel("rwx")).toBe("read + write + run");
     expect(modeLabel("r")).toBe("read");
     expect(modeLabel("")).toBe("no access");
+  });
+});
+
+describe("canRemember", () => {
+  const withMeta = (options: string[], metadata: unknown): Escalation =>
+    ({ ...esc(1, options), metadata }) as Escalation;
+
+  it("offers the standing grant only on kernel tool-approval rows that can be approved", () => {
+    expect(canRemember(withMeta(["approve", "deny"], { kind: "tool_approval" }))).toBe(true);
+    // Agent-authored escalation: no tool metadata, so `remember` would no-op.
+    expect(canRemember(withMeta(["approve", "deny"], {}))).toBe(false);
+    expect(canRemember(withMeta(["ship it", "hold"], { kind: "tool_approval" }))).toBe(false);
+    // A device-access gate: approvable, but nothing to mint a tool grant from.
+    expect(canRemember(withMeta(["approve", "deny"], { kind: "device_access" }))).toBe(false);
   });
 });

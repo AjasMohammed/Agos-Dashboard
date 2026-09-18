@@ -7,12 +7,11 @@ import { AppErrorBoundary } from "./app-error-boundary";
 import { grants, useAuthStore } from "@/auth/store";
 import { ScopeGuard } from "@/auth/scope-guard";
 import { logout } from "@/auth/actions";
-import { useQueryClient } from "@tanstack/react-query";
 import { useRealtimeStatus } from "@/realtime/connection";
 import { useUnreadCount, notificationKeys } from "@/api/queries/notifications";
 import { useEscalations, escalationKeys } from "@/api/queries/governance";
 import { useInvalidateOnEvent } from "@/realtime/cacheBridge";
-import { useChannel } from "@/realtime/useChannel";
+import { NotificationPanel } from "@/features/govern/notification-panel";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -282,24 +281,66 @@ function NotificationBell() {
   // Server-backed unread count (30s poll) so the badge is correct on load;
   // WS notification events refresh it immediately.
   const unreadQuery = useUnreadCount();
-  const qc = useQueryClient();
-  const navigate = useNavigate();
   const unread = unreadQuery.data?.unread_count ?? 0;
-  useChannel("notifications", () => qc.invalidateQueries({ queryKey: notificationKeys.unread }));
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // The prefix key, not `unread`: the panel's own list hangs off
+  // `notificationKeys.all`, so a narrower invalidation left an open panel
+  // showing a stale inbox while the badge had already moved. Debounced like the
+  // sidebar's escalation badge — the auto-deny sweeper can write a whole batch
+  // of inbox rows in one tick, and each event would otherwise cancel the
+  // refetch the previous one started.
+  useInvalidateOnEvent("notifications", [notificationKeys.all], { debounceMs: 300 });
+
+  // Escape returns focus to the bell. Without it a keyboard operator who tabbed
+  // into the panel is dropped at the top of the document and has to traverse the
+  // whole nav again. An outside click leaves focus where the click put it.
+  function closeAndRefocus() {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  // Dismiss the panel like any popover. `pointerdown` rather than `click` so a
+  // drag that starts outside closes it too, and the ref covers the trigger so
+  // the toggle click is not undone by this handler firing first.
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: PointerEvent) {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
   return (
-    <Button
-      variant="ghost"
-      size="icon"
-      title="Notifications"
-      aria-label={`Notifications, ${unread} unread`}
-      className="relative text-muted-foreground hover:text-foreground"
-      // Section routes are registered dynamically from NAV, so the router's
-      // static type union doesn't know them — same string-widening as nav links.
-      onClick={() => void navigate({ to: "/notifications" as string })}
-    >
-      <Bell />
-      {unread > 0 && <CountPill count={unread} className="absolute right-0.5 top-0.5" />}
-    </Button>
+    <div ref={wrapRef} className="relative">
+      <Button
+        ref={triggerRef}
+        variant="ghost"
+        size="icon"
+        title="Notifications"
+        aria-label={`Notifications, ${unread} unread`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        className="relative text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Bell />
+        {unread > 0 && <CountPill count={unread} className="absolute right-0.5 top-0.5" />}
+      </Button>
+      {open && <NotificationPanel onClose={closeAndRefocus} />}
+    </div>
   );
 }
 
@@ -420,7 +461,11 @@ function DisconnectedBanner() {
 
 /** Routes that own the whole content area (their own scroll regions, pinned bars). */
 function isFullBleed(pathname: string): boolean {
-  return pathname === "/" || /^\/pipelines\/(new|[^/]+\/edit)$/.test(pathname);
+  return (
+    pathname === "/" ||
+    pathname === "/agent-chats" ||
+    /^\/pipelines\/(new|[^/]+\/edit)$/.test(pathname)
+  );
 }
 
 export function AppShell() {

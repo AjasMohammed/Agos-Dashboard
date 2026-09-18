@@ -7,6 +7,7 @@ import { QueryState } from "@/components/query-state";
 import { DataTable, type Column } from "@/components/data-table";
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { relativeTime } from "@/lib/format";
@@ -14,7 +15,16 @@ import { ConnectAgentDialog } from "./connect-agent-dialog";
 import type { AgentSummary } from "@/api/models";
 
 const columns: Column<AgentSummary>[] = [
-  { key: "name", header: "Name", cell: (a) => <span className="font-medium">{a.name}</span> },
+  {
+    key: "name",
+    header: "Name",
+    cell: (a) => (
+      <span className="flex items-center gap-2 font-medium">
+        <AgentAvatar name={a.name} src={a.avatar} />
+        {a.name}
+      </span>
+    ),
+  },
   { key: "provider", header: "Provider", cell: (a) => a.provider },
   {
     key: "model",

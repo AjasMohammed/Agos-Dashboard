@@ -337,3 +337,100 @@ test("typing @ in the run-task prompt suggests uploaded files", async ({ page })
   await prompt.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
+
+/**
+ * The grant dialog stages a SET of permissions and submits them as N sequential
+ * POSTs (the kernel takes one `resource:BITS` per call). What is pinned here is
+ * the part a refactor would silently break: every staged row is actually sent,
+ * and a partial failure keeps the dialog open with ONLY the failures staged, so
+ * a retry cannot re-send what already landed.
+ */
+async function stubAgentDetail(page: Page) {
+  await page.route("**/api/v1/agents/alpha", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          summary: DASHBOARD.online_agents[0],
+          permissions: ["memory.semantic:rw"],
+          recent_tasks: [],
+          description: "",
+          thinking_level: "medium",
+        },
+      }),
+    }),
+  );
+  await page.route("**/api/v1/tools*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: [
+          { name: "notes", description: "notes", permissions: ["memory.blocks:rw"] },
+          { name: "recall", description: "recall", permissions: ["memory.episodic:rw"] },
+        ],
+        meta: { total: 2 },
+      }),
+    }),
+  );
+  await page.route("**/api/v1/roles*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { total: 0 } }),
+    }),
+  );
+}
+
+test("granting permissions sends every staged row and re-stages only failures", async ({
+  page,
+}) => {
+  await login(page);
+  await stubAgentDetail(page);
+
+  const sent: string[] = [];
+  await page.route("**/api/v1/agents/alpha/permissions", (route) => {
+    const permission = JSON.parse(route.request().postData() ?? "{}").permission as string;
+    sent.push(permission);
+    // memory.episodic is refused, so one of the two grants fails.
+    return permission.startsWith("memory.episodic")
+      ? route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: JSON.stringify({ error: { code: "FORBIDDEN", message: "denied", status: 403 } }),
+        })
+      : route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ data: {} }),
+        });
+  });
+
+  await page.goto("/agents/alpha");
+  // Permissions moved into the Access tab when the profile became a dashboard.
+  await page.getByRole("tab", { name: /^Access/ }).click();
+  await page.getByRole("button", { name: /^Grant$/ }).first().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "Grant permissions" })).toBeVisible();
+
+  // Stage two resources across two filters — the picker keeps what scrolled out
+  // of view, which is the whole point of staging. (The offered list comes from
+  // the vendored catalog, so filter to an exact resource rather than counting.)
+  const filter = dialog.getByPlaceholder(/Filter by resource/);
+  for (const resource of ["memory.blocks", "memory.episodic"]) {
+    await filter.fill(resource);
+    await expect(dialog.getByText(/Available resources\s*\(1\)/)).toBeVisible();
+    await dialog.getByRole("button", { name: /Select all/ }).click();
+  }
+  await expect(dialog.getByText("Staged (2)")).toBeVisible();
+
+  await dialog.getByRole("button", { name: /^Grant 2$/ }).click();
+
+  // Both were POSTed, one at a time.
+  await expect.poll(() => sent).toEqual(["memory.blocks:rw", "memory.episodic:rw"]);
+  // The dialog survives the partial failure carrying only the refused grant.
+  await expect(dialog.getByText("Staged (1)")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /Remove memory\.episodic/ })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /Remove memory\.blocks/ })).toHaveCount(0);
+});

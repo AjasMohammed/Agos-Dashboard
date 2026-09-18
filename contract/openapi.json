@@ -156,6 +156,170 @@
         ]
       }
     },
+    "/api/v1/agent-chats/{id}/continue": {
+      "post": {
+        "tags": [
+          "agent-chats"
+        ],
+        "summary": "`POST /api/v1/agent-chats/{id}/continue` — Resume a finished conversation in\nplace for more turns, picking up after its last speaker.",
+        "operationId": "agent_chats_continue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Conversation id (UUID)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContinueConvoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Conversation resumed (running)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ApiConvoSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Conversation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conversation is still running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agent-chats/{id}/messages": {
+      "post": {
+        "tags": [
+          "agent-chats"
+        ],
+        "summary": "`POST /api/v1/agent-chats/{id}/messages` — Post an operator message. A running\nconversation answers it on its next turn; a finished one resumes for one round.",
+        "operationId": "agent_chats_post_message",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Conversation id (UUID)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostConvoMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Message stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ApiConvoSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Conversation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/api/v1/agent-chats/{id}/stop": {
       "post": {
         "tags": [
@@ -4066,7 +4230,7 @@
           {
             "name": "channel",
             "in": "query",
-            "description": "Channel to subscribe to (`tasks`, `agents`, `audit`, `schedules`,\n`system`, or `events`). Subscribing requires the matching `<channel>:r`\nscope on the API key.",
+            "description": "Channel to subscribe to (`tasks`, `agents`, `audit`, `schedules`,\n`system`, `escalations`, or `events`). Subscribing requires the matching\n`<channel>:r` scope on the API key.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9978,6 +10142,13 @@
           "connected_at"
         ],
         "properties": {
+          "avatar": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Profile picture as a `data:image/...;base64,` URL, usable directly as an\n`<img src>`. Absent when none is set."
+          },
           "connected_at": {
             "type": "string",
             "format": "date-time"
@@ -10537,7 +10708,7 @@
         "properties": {
           "agent_name": {
             "type": "string",
-            "description": "Agent that produced this turn."
+            "description": "Agent that produced this turn, or `@user` for an operator message."
           },
           "content": {
             "type": "string",
@@ -10896,6 +11067,7 @@
         "description": "A running MCP server merged with its persisted attachment record.",
         "required": [
           "name",
+          "permission",
           "tool_count",
           "args",
           "has_auth_token",
@@ -10952,6 +11124,10 @@
               "null"
             ],
             "description": "OAuth connector id backing this server, if any."
+          },
+          "permission": {
+            "type": "string",
+            "description": "Permission that grants an agent every tool of this server\n(`mcp:<server>/:x`); pass it to the agent grant/revoke endpoints."
           },
           "state": {
             "type": [
@@ -11939,7 +12115,7 @@
               "string",
               "null"
             ],
-            "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_scoped`, `exec_capable`, `control_plane`, `interactive`)."
+            "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_agent_state`, `write_scoped`, `exec_capable`, `control_plane`,\n`interactive`)."
           },
           "status": {
             "type": "string"
@@ -12435,6 +12611,21 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "ContinueConvoRequest": {
+        "type": "object",
+        "description": "Request body for continuing a finished conversation in place.",
+        "properties": {
+          "turns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Additional agent turns to run (clamped to 1..=50; default 8).",
+            "minimum": 0
           }
         }
       },
@@ -13069,6 +13260,13 @@
               "connected_at"
             ],
             "properties": {
+              "avatar": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Profile picture as a `data:image/...;base64,` URL, usable directly as an\n`<img src>`. Absent when none is set."
+              },
               "connected_at": {
                 "type": "string",
                 "format": "date-time"
@@ -14393,7 +14591,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_scoped`, `exec_capable`, `control_plane`, `interactive`)."
+                "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_agent_state`, `write_scoped`, `exec_capable`, `control_plane`,\n`interactive`)."
               },
               "status": {
                 "type": "string"
@@ -15012,6 +15210,21 @@
                 "format": "int64",
                 "minimum": 0
               },
+              "policy_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "Id of the standing grant minted by `remember: true`, when one was."
+              },
+              "remember_note": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Human-readable outcome of `remember: true` — what was remembered, or\nwhy nothing was (already remembered, exec tool with no path, …)."
+              },
               "status": {
                 "type": "string"
               },
@@ -15179,6 +15392,13 @@
                 "connected_at"
               ],
               "properties": {
+                "avatar": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Profile picture as a `data:image/...;base64,` URL, usable directly as an\n`<img src>`. Absent when none is set."
+                },
                 "connected_at": {
                   "type": "string",
                   "format": "date-time"
@@ -15810,6 +16030,7 @@
               "description": "A running MCP server merged with its persisted attachment record.",
               "required": [
                 "name",
+                "permission",
                 "tool_count",
                 "args",
                 "has_auth_token",
@@ -15866,6 +16087,10 @@
                     "null"
                   ],
                   "description": "OAuth connector id backing this server, if any."
+                },
+                "permission": {
+                  "type": "string",
+                  "description": "Permission that grants an agent every tool of this server\n(`mcp:<server>/:x`); pass it to the agent grant/revoke endpoints."
                 },
                 "state": {
                   "type": [
@@ -16485,7 +16710,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_scoped`, `exec_capable`, `control_plane`, `interactive`)."
+                  "description": "Approval risk class (`readonly_scoped`, `readonly_external`,\n`write_agent_state`, `write_scoped`, `exec_capable`, `control_plane`,\n`interactive`)."
                 },
                 "status": {
                   "type": "string"
@@ -16850,6 +17075,15 @@
                 "body": {
                   "type": "string",
                   "description": "Truncated body text for list views."
+                },
+                "escalation_id": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "Numeric escalation id when this notification is an approval prompt\nraised by the escalation sink. Lets a client link the bell entry to the\nescalation queue entry it must act on — without it the row carries no\nmachine-readable pointer back to the thing that is blocking the task.",
+                  "minimum": 0
                 },
                 "from": {
                   "type": "string",
@@ -17628,6 +17862,15 @@
             "type": "string",
             "description": "Truncated body text for list views."
           },
+          "escalation_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Numeric escalation id when this notification is an approval prompt\nraised by the escalation sink. Lets a client link the bell entry to the\nescalation queue entry it must act on — without it the row carries no\nmachine-readable pointer back to the thing that is blocking the task.",
+            "minimum": 0
+          },
           "from": {
             "type": "string",
             "description": "Source label (e.g. \"Kernel\", agent name)."
@@ -17904,6 +18147,19 @@
           }
         }
       },
+      "PostConvoMessageRequest": {
+        "type": "object",
+        "description": "Request body for posting an operator message into a conversation.",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Message text (max 4000 chars)."
+          }
+        }
+      },
       "PrefProposalQuery": {
         "type": "object",
         "description": "Query filter for `GET /api/v1/prefs/proposals`.",
@@ -17956,6 +18212,10 @@
               "null"
             ],
             "description": "Optional free-form note recorded alongside the decision."
+          },
+          "remember": {
+            "type": "boolean",
+            "description": "On approve, also mint a standing grant for the escalated tool\n(agent-scoped, 7 days; parent-directory glob when the call had a\n`path`) so it stops re-prompting. Ignored on deny. Requires the\n`approvals:w` scope in addition to `escalations:w`. Refused for\nexec-capable tools with no path to scope by. Revocable via\n`DELETE /api/v1/approval-policies/{id}`."
           }
         }
       },
@@ -17973,6 +18233,21 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "policy_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Id of the standing grant minted by `remember: true`, when one was."
+          },
+          "remember_note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human-readable outcome of `remember: true` — what was remembered, or\nwhy nothing was (already remembered, exec tool with no path, …)."
           },
           "status": {
             "type": "string"
@@ -18191,6 +18466,13 @@
           "text"
         ],
         "properties": {
+          "file_ids": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Comma-separated upload ids attached to this message (from\n`GET /api/v1/files`). Resolved into context parts — extracted text for\ndocuments, image parts for a vision-capable agent."
+          },
           "text": {
             "type": "string"
           }
@@ -18428,6 +18710,13 @@
           "agent_name": {
             "type": "string"
           },
+          "avatar": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Profile picture as a `data:image/{png,jpeg,webp,gif};base64,` URL, at most\n64 KB. Absent = unchanged; `\"\"` = remove the picture."
+          },
           "description": {
             "type": [
               "string",
@@ -18446,6 +18735,14 @@
               "string",
               "null"
             ]
+          },
+          "working_set_size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Per-agent tool working-set size (T1 tools pre-armed by retrieval).\nAbsent = unchanged; `null` = revert to the kernel default; `0` = pinned\ntools only (small / low-TPM models).",
+            "minimum": 0
           }
         }
       },

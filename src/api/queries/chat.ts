@@ -98,6 +98,10 @@ async function streamErrorMessage(res: Response): Promise<{ message: string; det
 export async function streamChatMessage(
   sessionId: string,
   text: string,
+  /** Comma-separated upload ids the composer attached, or undefined for none.
+   *  The API resolves them into context parts — extracted text for documents,
+   *  image parts for a vision-capable agent. */
+  fileIds: string | undefined,
   h: StreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -110,7 +114,7 @@ export async function streamChatMessage(
       {
         method: "POST",
         headers: { "content-type": "application/json", Accept: "text/event-stream" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(fileIds ? { text, file_ids: fileIds } : { text }),
         signal,
       },
       null,

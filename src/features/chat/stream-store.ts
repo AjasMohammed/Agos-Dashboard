@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import { chatKeys, streamChatMessage, type StreamSummary } from "@/api/queries/chat";
+import type { ChatMessage } from "@/api/models";
+import { clearTurnLog, readTurnLog, saveTurn, type TurnLog } from "./turn-log";
 import { toastError } from "@/lib/errors";
 import { queryClient } from "@/lib/query";
 
@@ -101,14 +103,14 @@ interface StreamStore {
    */
   turnUsage: Record<string, NonNullable<ChatStream["usage"]>>;
   /**
-   * sessionId -> the reasoning of the newest finished turn, for the same reason
-   * as {@link StreamStore.turnUsage}: `ApiChatMessage` has no field for it, so
-   * the moment the transcript takes over it would otherwise vanish — which is
-   * exactly when the reader wants to go back and check the model's working.
-   * Only passes that actually produced text are kept; a bare marker adds nothing
-   * the transcript's own pass count doesn't already say.
+   * sessionId -> assistant row timestamp -> that turn's parts, in arrival order.
+   * The transcript flattens a turn (no reasoning field, one flat reply string,
+   * tool calls as sibling rows), so replaying it from there regroups it; this
+   * keeps what the turn actually looked like. Written when the handover refetch
+   * lands (the first moment the row it belongs to exists) and mirrored to
+   * localStorage, so it survives the next send AND a reload. See `turn-log.ts`.
    */
-  turnThinking: Record<string, ThoughtBlock[]>;
+  turns: Record<string, TurnLog>;
   /** sessionId -> text of a send that failed, for the composer to restore */
   failed: Record<string, string>;
   /**
@@ -123,7 +125,7 @@ interface StreamStore {
 export const useChatStreamStore = create<StreamStore>(() => ({
   streams: {},
   turnUsage: {},
-  turnThinking: {},
+  turns: {},
   failed: {},
   failedAt: {},
 }));
@@ -207,6 +209,37 @@ function finish(sessionId: string) {
   );
 }
 
+/** Timestamp of the newest assistant row the transcript would actually show. */
+function newestAssistantAt(sessionId: string): string | undefined {
+  const cached = queryClient.getQueryData<{ items: ChatMessage[] }>(chatKeys.messages(sessionId));
+  let at: string | undefined;
+  for (const m of cached?.items ?? []) {
+    // Empty assistant rows (tool-only iterations) are filtered out of the
+    // transcript, so a key on one is a key nobody ever renders.
+    if (m.role === "assistant" && m.content.trim() && (!at || m.timestamp > at)) at = m.timestamp;
+  }
+  return at;
+}
+
+/**
+ * Attach a finished turn's parts to the assistant row that carries its reply.
+ *
+ * `before` is the newest assistant row from before the handover: if the refetch
+ * rejected (or never ran) the cache still ends there, and writing the turn onto
+ * that row would staple it to the PREVIOUS reply — permanently, and in
+ * localStorage. Dropping it is the better failure.
+ *
+ * A turn of nothing but text is not worth storing: the transcript's own
+ * `content` renders it identically, and these entries are the bulky ones.
+ */
+function logTurn(sessionId: string, parts: StreamPart[], before?: string) {
+  if (!parts.some((p) => (p.kind === "thinking" && p.text?.trim()) || p.kind === "tool")) return;
+  const at = newestAssistantAt(sessionId);
+  if (!at || at === before) return;
+  const log = saveTurn(sessionId, at, parts);
+  useChatStreamStore.setState((st) => ({ turns: { ...st.turns, [sessionId]: log } }));
+}
+
 /**
  * Hand the turn over from the live bubble to the persisted transcript.
  *
@@ -221,8 +254,14 @@ function finish(sessionId: string) {
  * the wait is bounded. `finish` is idempotent — whichever path gets there first
  * wins and the other is a no-op.
  */
-function settle(sessionId: string) {
+function settle(sessionId: string, parts: StreamPart[] = []) {
   patch(sessionId, (s) => ({ ...s, done: true, parts: closeOpenTools(s.parts) }));
+  // Which row the turn belongs to is only knowable HERE, after the refetch:
+  // the assistant row does not exist until the kernel has persisted it. Doing it
+  // from a render effect instead ("the newest turn's parts go on the newest
+  // row") misfires whenever those two stop meaning the same thing — a refetch
+  // that failed, a turn written by another tab, a send made during the handover.
+  const before = newestAssistantAt(sessionId);
   // Only ever finish the entry being settled: if the operator sends again
   // before this refetch lands, `startChatStream` has already replaced it, and
   // finishing blindly would tear down the NEW stream mid-reply.
@@ -235,6 +274,9 @@ function settle(sessionId: string) {
     .invalidateQueries({ queryKey: chatKeys.messages(sessionId) })
     .finally(() => {
       clearTimeout(bail);
+      // Log BEFORE dropping the bubble: one render with the turn already on the
+      // persisted row, instead of a frame with it nowhere.
+      logTurn(sessionId, parts, before);
       finishIfCurrent();
     })
     // A rejected invalidation is the query's own problem to report; swallowing
@@ -244,7 +286,7 @@ function settle(sessionId: string) {
 }
 
 /** Start streaming a reply. No-op if this session already has one in flight. */
-export function startChatStream(sessionId: string, text: string) {
+export function startChatStream(sessionId: string, text: string, fileIds?: string) {
   const existing = useChatStreamStore.getState().streams[sessionId];
   if (existing) {
     // Still generating → ignore. A stopped/finished/failed turn whose bubble is
@@ -256,8 +298,9 @@ export function startChatStream(sessionId: string, text: string) {
   useChatStreamStore.setState((st) => ({
     streams: { ...st.streams, [sessionId]: { user: text, parts: [] } },
     // The previous turn's cost must not sit under the new one while it streams.
+    // (Reasoning is NOT dropped here: it is filed under the row that produced
+    // it, so an older turn keeps its own.)
     turnUsage: drop(st.turnUsage, sessionId) as StreamStore["turnUsage"],
-    turnThinking: drop(st.turnThinking, sessionId) as StreamStore["turnThinking"],
     failed: drop(st.failed, sessionId) as Record<string, string>,
   }));
 
@@ -373,6 +416,7 @@ export function startChatStream(sessionId: string, text: string) {
   void streamChatMessage(
     sessionId,
     text,
+    fileIds,
     {
       onActivity: armIdle,
       onChunk: (chunk) => bufferPush({ kind: "text", text: chunk }),
@@ -451,12 +495,16 @@ export function startChatStream(sessionId: string, text: string) {
           return { ...s, usage, parts };
         });
         const finished = useChatStreamStore.getState().streams[sessionId];
-        const thoughts = streamThoughts(finished);
-        useChatStreamStore.setState((st) => ({
-          ...(finished?.usage ? { turnUsage: { ...st.turnUsage, [sessionId]: finished.usage } } : null),
-          ...(thoughts.length ? { turnThinking: { ...st.turnThinking, [sessionId]: thoughts } } : null),
-        }));
-        settle(sessionId);
+        if (finished?.usage) {
+          useChatStreamStore.setState((st) => ({
+            turnUsage: { ...st.turnUsage, [sessionId]: finished.usage! },
+          }));
+        }
+        // Captured here, not read back at settle time: a follow-up sent during
+        // the handover replaces this stream entry, and the parts of the turn
+        // that just finished would go with it. `closeOpenTools` runs inside
+        // `settle`, so read the parts back after it.
+        settle(sessionId, useChatStreamStore.getState().streams[sessionId]?.parts ?? []);
       },
       onError: (msg, detail) => fail(sessionId, text, msg, detail),
     },
@@ -474,16 +522,17 @@ export function stopChatStream(sessionId: string) {
   // bubble on screen until the transcript replaces it (same as `onDone` — a
   // synchronous `finish` here blinked the whole reply out for one round trip).
   controllers.get(sessionId)?.abort();
-  settle(sessionId);
+  settle(sessionId, useChatStreamStore.getState().streams[sessionId]?.parts ?? []);
 }
 
 /** Kill a stream for good (session deleted) — no toast, no text to restore. */
 export function abortChatStream(sessionId: string) {
   controllers.get(sessionId)?.abort();
   finish(sessionId);
+  clearTurnLog(sessionId);
   useChatStreamStore.setState((st) => ({
     turnUsage: drop(st.turnUsage, sessionId) as StreamStore["turnUsage"],
-    turnThinking: drop(st.turnThinking, sessionId) as StreamStore["turnThinking"],
+    turns: drop(st.turns, sessionId) as StreamStore["turns"],
   }));
   // Parked retry text for a session that no longer exists would otherwise sit
   // in the store for the life of the tab, and land in the composer of whatever
@@ -499,7 +548,6 @@ export function dismissChatStream(sessionId: string) {
   finish(sessionId);
   useChatStreamStore.setState((st) => ({
     turnUsage: drop(st.turnUsage, sessionId) as StreamStore["turnUsage"],
-    turnThinking: drop(st.turnThinking, sessionId) as StreamStore["turnThinking"],
   }));
 }
 
@@ -512,5 +560,15 @@ export function consumeFailedChatText(sessionId: string) {
           failedAt: drop(st.failedAt, sessionId) as Record<string, number>,
         }
       : st,
+  );
+}
+
+/**
+ * Pull a session's stored turns into the store when its conversation opens.
+ * No-op once hydrated, so switching back and forth doesn't re-read storage.
+ */
+export function hydrateTurns(sessionId: string) {
+  useChatStreamStore.setState((st) =>
+    sessionId in st.turns ? st : { turns: { ...st.turns, [sessionId]: readTurnLog(sessionId) } },
   );
 }

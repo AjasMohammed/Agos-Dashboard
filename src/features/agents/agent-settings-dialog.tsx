@@ -3,6 +3,8 @@ import { Settings } from "lucide-react";
 import { toast } from "sonner";
 import { useAgent, useUpdateAgentSettings } from "@/api/queries/agents";
 import { toastError } from "@/lib/errors";
+import { imageFileToAvatar } from "@/lib/avatar";
+import { AgentAvatar } from "@/components/agent-avatar";
 import {
   Dialog,
   DialogContent,
@@ -21,11 +23,13 @@ import type { AgentDetail, UpdateAgentSettingsRequest } from "@/api/models";
 
 const THINKING = ["off", "low", "medium", "high", "max"];
 
-/** The three editable settings, flattened out of the agent detail payload. */
+/** The editable settings, flattened out of the agent detail payload. */
 export interface AgentSettingsValues {
   description: string;
   thinking_level: string;
   system_prompt: string;
+  /** Profile picture data URL; `""` = none. */
+  avatar: string;
 }
 
 function settingsOf(detail: AgentDetail): AgentSettingsValues {
@@ -33,6 +37,7 @@ function settingsOf(detail: AgentDetail): AgentSettingsValues {
     description: detail.description ?? "",
     thinking_level: detail.thinking_level ?? "medium",
     system_prompt: detail.system_prompt ?? "",
+    avatar: detail.summary.avatar ?? "",
   };
 }
 
@@ -57,6 +62,8 @@ export function changedSettings(
   if (description !== loaded.description) body.description = description;
   if (next.thinking_level !== loaded.thinking_level) body.thinking_level = next.thinking_level;
   if (next.system_prompt !== loaded.system_prompt) body.system_prompt = next.system_prompt;
+  // `""` is the API's "remove picture", same spelling as clearing the prompt.
+  if (next.avatar !== loaded.avatar) body.avatar = next.avatar;
   return body;
 }
 
@@ -75,6 +82,7 @@ export function AgentSettingsDialog({ name }: { name: string }) {
     description: "",
     thinking_level: "medium",
     system_prompt: "",
+    avatar: "",
   });
   // What the fields held when the dialog opened. Diffing against a live
   // `detail.data` would be wrong: a background refetch mid-edit would make an
@@ -84,9 +92,31 @@ export function AgentSettingsDialog({ name }: { name: string }) {
   const body = changedSettings(name, loaded.current, values);
   const set = (patch: Partial<AgentSettingsValues>) => setValues((v) => ({ ...v, ...patch }));
 
+  // Bumped on every pick/Remove/open so a slow conversion that finishes late
+  // cannot overwrite a newer choice or a freshly reopened dialog.
+  const avatarSeq = useRef(0);
+  const [converting, setConverting] = useState(false);
+
+  async function onPickAvatar(file: File | undefined) {
+    if (!file) return;
+    const seq = ++avatarSeq.current;
+    setConverting(true);
+    try {
+      const avatar = await imageFileToAvatar(file);
+      if (seq === avatarSeq.current) set({ avatar });
+    } catch (err) {
+      // Our own guards throw plain Errors with a useful message; decode failures are DOMExceptions.
+      const msg =
+        err instanceof Error && err.name === "Error" ? err.message : "Could not read that image";
+      if (seq === avatarSeq.current) toast.error(msg);
+    } finally {
+      if (seq === avatarSeq.current) setConverting(false);
+    }
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (update.isPending) return;
+    if (update.isPending || converting) return;
     if (isNoOp(body)) {
       setOpen(false);
       return;
@@ -109,6 +139,8 @@ export function AgentSettingsDialog({ name }: { name: string }) {
         // saving would then write those blanks over the stored values.
         if (o && !data) return;
         if (o && data) {
+          avatarSeq.current++;
+          setConverting(false);
           const v = settingsOf(data);
           loaded.current = v;
           setValues(v);
@@ -128,11 +160,38 @@ export function AgentSettingsDialog({ name }: { name: string }) {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Agent settings</DialogTitle>
-          <DialogDescription>
-            Update {name}. Only the fields you change are sent.
-          </DialogDescription>
+          <DialogDescription>Update {name}. Only the fields you change are sent.</DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="grid gap-3">
+          <div className="grid gap-1.5">
+            <Label htmlFor="agent-avatar">Profile picture</Label>
+            <div className="flex items-center gap-3">
+              <AgentAvatar name={name} src={values.avatar} className="size-12 text-base" />
+              <Input
+                id="agent-avatar"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                // Reset so re-picking the same file after Remove still fires onChange.
+                onChange={(e) => {
+                  void onPickAvatar(e.target.files?.[0]);
+                  e.target.value = "";
+                }}
+              />
+              {values.avatar && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    avatarSeq.current++;
+                    setConverting(false);
+                    set({ avatar: "" });
+                  }}
+                >
+                  Remove
+                </Button>
+              )}
+            </div>
+          </div>
           <div className="grid gap-1.5">
             <Label>Description</Label>
             <Input
@@ -168,7 +227,7 @@ export function AgentSettingsDialog({ name }: { name: string }) {
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={update.isPending || isNoOp(body)}>
+            <Button type="submit" disabled={update.isPending || converting || isNoOp(body)}>
               {update.isPending ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>

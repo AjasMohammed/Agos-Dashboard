@@ -77,6 +77,7 @@ Variable (ids, code, JSON).
 | `Checkbox` | native checkbox with the brand accent |
 | `DropdownMenu` | overflow/user menus (Radix) |
 | `StatusBadge` / `Badge` | status words / short labels; tones map to the status hues |
+| `When` | every timestamp — relative text, absolute in `title`, real `<time dateTime>` |
 
 Reach for these before writing a bordered `div`. When a page needs something
 none of them cover, add the primitive here rather than a one-off class string.
